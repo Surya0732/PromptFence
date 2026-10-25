@@ -1,413 +1,517 @@
-"""Rule-based prompt-injection detector for PromptFence.
+"""Deterministic rule-based prompt injection detector for PromptFence.
 
-This module implements deterministic, pattern-matching detection for four
-categories of potential prompt-injection indicators:
+This module inspects text using transparent, documented phrase signatures
+and simple normalization to identify indicators across four key categories:
+- instruction_override
+- secret_extraction
+- data_exfiltration
+- unauthorized_tool_use
 
-1. **instruction_override** — attempts to override, ignore, or replace
-   the system prompt or safety instructions.
-2. **secret_extraction** — attempts to reveal system prompts, credentials,
-   API keys, passwords, or other protected information.
-3. **data_exfiltration** — attempts to send, disclose, or transfer private
-   information to an unauthorized destination.
-4. **unauthorized_tool_use** — attempts to invoke tools, execute commands,
-   or access resources without proper authorization.
-
-Limitations
------------
-- Pattern-based detection can never guarantee identification of every attack.
-  Sophisticated adversaries can rephrase prompts to evade static rules.
-- These rules are designed as a *baseline* layer. A future model-assisted
-  detector (Phase 2) will improve recall and precision.
-- The rules aim to minimise false positives on legitimate security-education
-  content and code examples, but some edge cases may still be flagged.
-- A keyword match alone is NOT treated as conclusive proof of an attack;
-  rules look for *imperative phrasing* and *contextual markers* that
-  suggest malicious intent rather than mere discussion.
+Note:
+A detected phrase is an indicator, not definitive proof of malicious intent.
+Similarly, absence of matches does not guarantee safety. The detector operates
+heuristically and does not execute or interpret scanned text.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Dict, List, NamedTuple
+
+from app.schemas import FindingCategory, FindingSeverity
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+class RuleDefinition(NamedTuple):
+    """Specification for a phrase-based detection rule."""
 
-def _normalize(text: str) -> str:
-    """Return a lowercased, whitespace-collapsed copy for matching.
+    indicator: str
+    category: FindingCategory
+    severity: FindingSeverity
+    description: str
 
-    The original text is preserved in findings as evidence.
+
+# Predefined detection rules catalog
+RULE_CATALOG: List[RuleDefinition] = [
+    # -------------------------------------------------------------------------
+    # Category: instruction_override
+    # -------------------------------------------------------------------------
+    RuleDefinition(
+        indicator="ignore previous instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Direct imperative command attempting to clear or override prior instructions.",
+    ),
+    RuleDefinition(
+        indicator="ignore all previous instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Comprehensive command attempting to wipe all prior instructions.",
+    ),
+    RuleDefinition(
+        indicator="ignore all prior instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Alternative phrasing attempting to bypass preceding context.",
+    ),
+    RuleDefinition(
+        indicator="disregard previous instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Formal phrasing attempting to neutralize preceding instructions.",
+    ),
+    RuleDefinition(
+        indicator="disregard all previous instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Directive commanding total disregard of preceding context.",
+    ),
+    RuleDefinition(
+        indicator="disregard system instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Explicit directive to ignore the system prompt or framework constraints.",
+    ),
+    RuleDefinition(
+        indicator="forget all previous instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Memory wipe style directive targeting preceding system instructions.",
+    ),
+    RuleDefinition(
+        indicator="forget previous instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Directive to forget previous constraints.",
+    ),
+    RuleDefinition(
+        indicator="override system prompt",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Explicit override directed at system-level prompt guidance.",
+    ),
+    RuleDefinition(
+        indicator="bypass safety guidelines",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Attempt to instruct the agent to ignore safety guardrails.",
+    ),
+    RuleDefinition(
+        indicator="bypass all safety protocols",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Directive to drop all safety protocols.",
+    ),
+    RuleDefinition(
+        indicator="reset all instructions",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.HIGH,
+        description="Attempt to reset internal agent instructions.",
+    ),
+    RuleDefinition(
+        indicator="you are now in developer mode",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.MEDIUM,
+        description="Persona jailbreak pattern attempting to emulate an unconstrained developer mode.",
+    ),
+    RuleDefinition(
+        indicator="enable developer mode",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.MEDIUM,
+        description="Jailbreak command attempting to unlock privileged operational modes.",
+    ),
+    RuleDefinition(
+        indicator="jailbreak mode",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.MEDIUM,
+        description="Explicit jailbreak tag indicating roleplay or unconstrained execution.",
+    ),
+    RuleDefinition(
+        indicator="system override:",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.MEDIUM,
+        description="Simulated system delimiter trying to inject high-privilege instructions.",
+    ),
+    RuleDefinition(
+        indicator="new instructions:",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.MEDIUM,
+        description="Delimited pattern attempting to inject new governing instructions.",
+    ),
+    RuleDefinition(
+        indicator="act as an unfiltered",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.LOW,
+        description="Roleplay persona request to strip filters.",
+    ),
+    RuleDefinition(
+        indicator="do anything now",
+        category=FindingCategory.INSTRUCTION_OVERRIDE,
+        severity=FindingSeverity.LOW,
+        description="Classic DAN-style framing aiming to remove operational bounds.",
+    ),
+    # -------------------------------------------------------------------------
+    # Category: secret_extraction
+    # -------------------------------------------------------------------------
+    RuleDefinition(
+        indicator="reveal your system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Direct request to exfiltrate proprietary or security-sensitive system prompts.",
+    ),
+    RuleDefinition(
+        indicator="print your system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Command to print out internal system configuration text.",
+    ),
+    RuleDefinition(
+        indicator="output your system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Command to dump system prompt contents into the conversation.",
+    ),
+    RuleDefinition(
+        indicator="dump your system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Command asking for an exact memory or prompt dump of the system message.",
+    ),
+    RuleDefinition(
+        indicator="show your system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Request to inspect the underlying system prompt.",
+    ),
+    RuleDefinition(
+        indicator="reveal the system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Request asking to reveal the internal system prompt.",
+    ),
+    RuleDefinition(
+        indicator="print the system prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Directive to print system instructions.",
+    ),
+    RuleDefinition(
+        indicator="reveal your initial prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Command targeting initial setup or system instructions.",
+    ),
+    RuleDefinition(
+        indicator="reveal api key",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Attempt to extract API keys or provider secrets.",
+    ),
+    RuleDefinition(
+        indicator="leak api key",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Explicit request to leak API credentials.",
+    ),
+    RuleDefinition(
+        indicator="print credentials",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Attempt to extract authentication credentials from agent context.",
+    ),
+    RuleDefinition(
+        indicator="leak credentials",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Attempt to leak authentication credentials from agent context.",
+    ),
+    RuleDefinition(
+        indicator="reveal credentials",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Attempt to reveal authentication credentials from agent context.",
+    ),
+    RuleDefinition(
+        indicator="dump environment variables",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Directive targeting OS environment variables and secrets.",
+    ),
+    RuleDefinition(
+        indicator="print env vars",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.HIGH,
+        description="Abbreviated directive targeting environment variables.",
+    ),
+    RuleDefinition(
+        indicator="display system instructions",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.MEDIUM,
+        description="Request to show confidential operating instructions.",
+    ),
+    RuleDefinition(
+        indicator="what are your secret instructions",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.MEDIUM,
+        description="Interrogative query targeting confidential operational guidelines.",
+    ),
+    RuleDefinition(
+        indicator="what is your hidden prompt",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.MEDIUM,
+        description="Interrogative query seeking hidden system prompt text.",
+    ),
+    RuleDefinition(
+        indicator="repeat everything above",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.MEDIUM,
+        description="Heuristic attack pattern seeking to dump context preceding the user turn.",
+    ),
+    RuleDefinition(
+        indicator="repeat the text above",
+        category=FindingCategory.SECRET_EXTRACTION,
+        severity=FindingSeverity.LOW,
+        description="Pattern attempting to echo context that may include the system prompt.",
+    ),
+    # -------------------------------------------------------------------------
+    # Category: data_exfiltration
+    # -------------------------------------------------------------------------
+    RuleDefinition(
+        indicator="exfiltrate data",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Explicit instruction to siphon or exfiltrate private conversation data.",
+    ),
+    RuleDefinition(
+        indicator="send this data to http",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Directive to transmit data to an external HTTP destination.",
+    ),
+    RuleDefinition(
+        indicator="send this data to https",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Directive to transmit data to an external HTTPS destination.",
+    ),
+    RuleDefinition(
+        indicator="send data to http",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Command to relay internal data across an external HTTP endpoint.",
+    ),
+    RuleDefinition(
+        indicator="send data to https",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Command to relay internal data across an external HTTPS endpoint.",
+    ),
+    RuleDefinition(
+        indicator="upload cookies to",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Instruction attempting session hijacking via cookie exfiltration.",
+    ),
+    RuleDefinition(
+        indicator="upload tokens to",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Instruction targeting authorization tokens for outbound exfiltration.",
+    ),
+    RuleDefinition(
+        indicator="curl http",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Command pattern attempting HTTP network requests with curl.",
+    ),
+    RuleDefinition(
+        indicator="curl https",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Command pattern attempting HTTPS network requests with curl.",
+    ),
+    RuleDefinition(
+        indicator="webhook.site",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Common public request catcher domain used for out-of-band data exfiltration.",
+    ),
+    RuleDefinition(
+        indicator="requestbin.com",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Public endpoint frequently used to catch stolen credentials and payloads.",
+    ),
+    RuleDefinition(
+        indicator="burpcollaborator.net",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Out-of-band interaction server domain commonly used in security tests and exfiltration.",
+    ),
+    RuleDefinition(
+        indicator="post contents to http",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Instruction directing an outbound HTTP POST of agent context or data.",
+    ),
+    RuleDefinition(
+        indicator="forward all conversation history to",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.HIGH,
+        description="Directive demanding the transfer of entire chat logs to a third party.",
+    ),
+    RuleDefinition(
+        indicator="send output to external server",
+        category=FindingCategory.DATA_EXFILTRATION,
+        severity=FindingSeverity.MEDIUM,
+        description="Request instructing delivery of model output to an untrusted external server.",
+    ),
+    # -------------------------------------------------------------------------
+    # Category: unauthorized_tool_use
+    # -------------------------------------------------------------------------
+    RuleDefinition(
+        indicator="execute command:",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Explicit directive commanding the agent to run an operating system command.",
+    ),
+    RuleDefinition(
+        indicator="run bash command",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Directive to invoke arbitrary bash commands on the host machine.",
+    ),
+    RuleDefinition(
+        indicator="run powershell command",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Directive to execute PowerShell commands on the host machine.",
+    ),
+    RuleDefinition(
+        indicator="run shell command",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Instruction to spawn and execute commands in a shell environment.",
+    ),
+    RuleDefinition(
+        indicator="rm -rf",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Destructive Unix filesystem command pattern.",
+    ),
+    RuleDefinition(
+        indicator="format c:",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Destructive Windows disk formatting command pattern.",
+    ),
+    RuleDefinition(
+        indicator="delete file system",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Directive seeking destructive filesystem operations.",
+    ),
+    RuleDefinition(
+        indicator="drop database",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Destructive SQL command pattern targeting whole databases.",
+    ),
+    RuleDefinition(
+        indicator="drop table",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Destructive SQL DDL command pattern targeting database tables.",
+    ),
+    RuleDefinition(
+        indicator="shutdown -s",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Host system shutdown command pattern.",
+    ),
+    RuleDefinition(
+        indicator="grant admin access",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Privilege escalation command targeting user access controls.",
+    ),
+    RuleDefinition(
+        indicator="call tool without authorization",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.MEDIUM,
+        description="Directive urging the agent to bypass tool invocation approvals.",
+    ),
+    RuleDefinition(
+        indicator="bypass tool permissions",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.MEDIUM,
+        description="Instruction to evade tool execution permission checks.",
+    ),
+    RuleDefinition(
+        indicator="delete all files",
+        category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+        severity=FindingSeverity.HIGH,
+        description="Command instructing bulk destruction of local or remote files.",
+    ),
+]
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize whitespace and formatting for consistent matching.
+
+    Replaces sequences of whitespace (spaces, tabs, newlines) with a single space,
+    preserving words and punctuation.
     """
-    return re.sub(r"\s+", " ", text.lower().strip())
+    return " ".join(text.split())
 
 
-def _extract_evidence(text: str, match_start: int, match_end: int,
-                      context_chars: int = 80) -> str:
-    """Extract a short excerpt around a match position.
+def _extract_evidence(normalized_text: str, match_index: int, indicator_len: int, context_chars: int = 35) -> str:
+    """Extract a representative context snippet around a detected indicator."""
+    start = max(0, match_index - context_chars)
+    end = min(len(normalized_text), match_index + indicator_len + context_chars)
 
-    The excerpt is capped to avoid leaking large amounts of user input.
-    """
-    start = max(0, match_start - context_chars // 4)
-    end = min(len(text), match_end + context_chars)
-    excerpt = text[start:end].strip()
-    if len(excerpt) > 120:
-        excerpt = excerpt[:120] + "…"
-    return excerpt
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(normalized_text) else ""
+
+    return f"{prefix}{normalized_text[start:end]}{suffix}"
 
 
-def _make_finding(category: str, severity: str, evidence: str,
-                  matched_indicator: str) -> dict[str, Any]:
-    """Build a finding dict with the required fields."""
-    return {
-        "detector": "rules",
-        "category": category,
-        "severity": severity,
-        "evidence": evidence,
-        "matched_indicator": matched_indicator,
-    }
+def detect_with_rules(text: str) -> List[Dict[str, Any]]:
+    """Scan input text against predefined phrase rules.
 
+    Args:
+        text: The string content to inspect.
 
-# ---------------------------------------------------------------------------
-# Pattern definitions
-# ---------------------------------------------------------------------------
-# Each pattern is a tuple of (compiled_regex, severity, indicator_description).
-# Patterns are designed to match imperative/instructional phrasing rather than
-# mere mentions of security concepts.  This reduces false positives on
-# educational or research text.
-#
-# IMPORTANT: Regex patterns use word boundaries (\b) and contextual anchors
-# to avoid matching inside unrelated words.  They are applied to the
-# *normalized* (lowercased, whitespace-collapsed) text.
-
-_INSTRUCTION_OVERRIDE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
-    # Direct instruction to ignore previous prompts / instructions
-    (
-        re.compile(
-            r"\b(?:ignore|disregard|forget|override|bypass|skip|suppress|abandon)"
-            r"\s+(?:all\s+|your\s+|any\s+|the\s+)*(?:previous|prior|above|earlier|existing|original|old|initial)"
-            r"\s+(?:instructions?|prompts?|rules?|guidelines?|constraints?|directives?|context)",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Imperative phrase directing the model to ignore prior instructions.",
-    ),
-    # Adversarial / jailbreak persona reassignment
-    (
-        re.compile(
-            r"\b(?:you\s+are\s+now|from\s+now\s+on\s+you\s+are|switch\s+to\s+(?:a\s+)?new\s+persona\s+named)\s+"
-            r"(?:an?\s+)?(?:unrestricted|unfiltered|jailbroken|chaosgpt|dan\b)",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Imperative directive to adopt an unrestricted, jailbroken, or adversarial persona.",
-    ),
-    # "You are now …" / "Act as …" role reassignment
-    (
-        re.compile(
-            r"\b(?:you\s+are\s+now|from\s+now\s+on\s+you\s+are|act\s+as\s+if\s+you\s+(?:are|were)|"
-            r"pretend\s+(?:you\s+are|to\s+be)|roleplay\s+as|switch\s+to\s+(?:a\s+)?new\s+(?:role|persona|mode))",
-            re.IGNORECASE,
-        ),
-        "medium",
-        "Attempt to reassign the model's role or persona.",
-    ),
-    # "New instructions:" / "System prompt:" override
-    (
-        re.compile(
-            r"(?:^|\n)\s*(?:new\s+(?:system\s+)?instructions?|updated?\s+(?:system\s+)?prompt|"
-            r"replacement\s+(?:system\s+)?prompt|override\s+prompt)\s*[:\-]",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Header-style marker introducing replacement instructions.",
-    ),
-    # Jailbreak-style: "DAN", "Developer Mode", etc.
-    (
-        re.compile(
-            r"\b(?:enable\s+(?:developer|dev|debug|god|jailbreak|unrestricted)\s+mode|"
-            r"activate\s+(?:dan|developer|unrestricted)\s+mode|"
-            r"entering\s+(?:developer|unrestricted|unfiltered)\s+mode)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Jailbreak-style mode activation phrase.",
-    ),
-    # "Do not follow your rules / safety guidelines"
-    (
-        re.compile(
-            r"\b(?:do\s+not|don'?t|never)\s+follow\s+(?:your|the|any)\s+"
-            r"(?:rules?|guidelines?|safety|restrictions?|policies|instructions?)\b",
-            re.IGNORECASE,
-        ),
-        "medium",
-        "Instruction to disregard safety rules or guidelines.",
-    ),
-]
-
-_SECRET_EXTRACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
-    # "Reveal / show / output your system prompt"
-    (
-        re.compile(
-            r"\b(?:reveal|show|display|output|print|repeat|echo|recite|leak|expose|disclose|dump|share)"
-            r"\s+(?:me\s+)?(?:your\s+)?(?:full\s+|complete\s+|entire\s+|original\s+)?"
-            r"(?:system\s+prompt|system\s+message|initial\s+prompt|hidden\s+(?:prompt|instructions?)|"
-            r"internal\s+instructions?|secret\s+instructions?|confidential\s+instructions?)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Request to reveal the system prompt or internal instructions.",
-    ),
-    # "What is / tell me / show me your system prompt"
-    (
-        re.compile(
-            r"\b(?:what\s+(?:is|are)|tell\s+me|give\s+me|show\s+me|list|provide)"
-            r"\s+(?:your\s+)?(?:full\s+|complete\s+|entire\s+|original\s+)?"
-            r"(?:system\s+prompt|system\s+message|initial\s+instructions?|hidden\s+instructions?|"
-            r"api\s+keys?|secret\s+keys?|credentials?|passwords?|tokens?|private\s+keys?)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Direct question attempting to extract secrets or system prompt.",
-    ),
-    # Asking to include API keys / passwords in the response
-    (
-        re.compile(
-            r"\b(?:include|embed|insert|put|place|add)\s+(?:the\s+|your\s+|any\s+)?"
-            r"(?:api\s+keys?|secret\s+keys?|credentials?|passwords?|tokens?|private\s+keys?)"
-            r"\s+(?:in|into|within|inside)\s+(?:your\s+)?(?:response|output|reply|answer|message)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Request to embed secrets in the model's output.",
-    ),
-    # "Repeat everything above" — common extraction technique
-    (
-        re.compile(
-            r"\b(?:repeat|copy|reproduce|echo)\s+(?:everything|all\s+(?:text|content))"
-            r"\s+(?:above|before|preceding|from\s+the\s+(?:start|beginning))\b",
-            re.IGNORECASE,
-        ),
-        "medium",
-        "Request to repeat earlier content, which may include system prompt text.",
-    ),
-]
-
-_DATA_EXFILTRATION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
-    # "Send / post / transmit data to <URL>"
-    (
-        re.compile(
-            r"\b(?:send|post|transmit|upload|forward|exfiltrate|transfer|submit|deliver)"
-            r"\s+(?:(?:all|the|this|that|any|user|private|sensitive|confidential|session|customer)\s+)*"
-            r"(?:data|information|content|results?|details?|records?|files?|logs?|tokens?|credentials?)"
-            r"\s+(?:to|via|through|using)\s+"
-            r"(?:https?://|ftp://)",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Instruction to send data to an external URL.",
-    ),
-    # Exfiltrate sensitive data to an external server/endpoint/webhook
-    (
-        re.compile(
-            r"\b(?:send|post|transmit|upload|forward|exfiltrate|transfer|submit|deliver)"
-            r"\s+(?:(?:all\s+|the\s+|this\s+|any\s+)?(?:user|private|sensitive|confidential|session|customer|internal|secret)\s+)"
-            r"(?:data|information|content|results?|details?|records?|files?|logs?|tokens?|credentials?)"
-            r"\s+(?:to|via|through|using)\s+"
-            r"an?\s+(?:external|remote|third.party)\s+(?:server|endpoint|url|api|service|webhook)",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Instruction to transmit sensitive or user data to an external destination.",
-    ),
-    # Explicit exfiltration verbs (exfiltrate, exfiltration) targeting remote endpoints
-    (
-        re.compile(
-            r"\b(?:exfiltrate|exfiltrating|exfiltration)\s+.*?"
-            r"\b(?:to|via|through|using|endpoint|server|url|webhook)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Explicit exfiltration instruction targeting an external destination.",
-    ),
-    # Markdown image / link exfiltration — ![](http://evil.com/img?data=...)
-    (
-        re.compile(
-            r"!\[.*?\]\(\s*https?://.*?\?.*?(?:data|secret|key|token|password|prompt)\s*=",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Markdown image/link with query parameter exfiltration pattern.",
-    ),
-    # "Encode and send" / "base64 encode ... then send"
-    (
-        re.compile(
-            r"\b(?:base64|hex|url)\s*(?:encode|encrypt)\b.*?"
-            r"\b(?:send|post|transmit|upload|forward|transfer)\b",
-            re.IGNORECASE,
-        ),
-        "medium",
-        "Instruction to encode data before sending, suggesting covert exfiltration.",
-    ),
-    # "Write data to <external URL / webhook>"
-    (
-        re.compile(
-            r"\b(?:write|append|log|store|save)\s+(?:(?:all|the|this|user|private|sensitive)\s+)?"
-            r"(?:data|information|content|input|conversation)\s+(?:to|into)\s+"
-            r"(?:https?://|an?\s+(?:external|remote|third.party))",
-            re.IGNORECASE,
-        ),
-        "medium",
-        "Instruction to write data to an external location.",
-    ),
-    # Asking to include private data in a URL
-    (
-        re.compile(
-            r"\b(?:include|embed|append|add|put)\s+(?:(?:the|user|private|sensitive|secret)\s+)*"
-            r"(?:data|info|information|password|key|token|credential)\s+"
-            r"(?:in|into|as\s+part\s+of)\s+(?:a\s+|the\s+)?(?:url|link|query\s+(?:string|parameter))\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Request to embed sensitive data in a URL or query parameter.",
-    ),
-]
-
-_UNAUTHORIZED_TOOL_USE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
-    # "Execute / run <shell command>"
-    (
-        re.compile(
-            r"\b(?:execute|run|invoke|call|launch|start|spawn|perform)\s+"
-            r"(?:the\s+|this\s+|a\s+)?(?:following\s+)?"
-            r"(?:shell\s+command|terminal\s+command|system\s+command|bash\s+command|"
-            r"powershell\s+command|cmd\s+command|os\s+command|command\s+line)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Instruction to execute a shell or system command.",
-    ),
-    # "Use os.system / subprocess / exec / eval"
-    (
-        re.compile(
-            r"\b(?:use|call|invoke|run|execute)\s+"
-            r"(?:os\.system|subprocess|exec|eval|__import__|importlib|"
-            r"os\.popen|os\.exec[a-z]*|shutil\.rmtree)\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Instruction to use dangerous Python functions for code execution.",
-    ),
-    # "Access / read / write / delete <filesystem path>"
-    (
-        re.compile(
-            r"\b(?:access|read|write|delete|remove|modify|overwrite|create)\s+"
-            r"(?:the\s+|a\s+)?(?:file|directory|folder|path)\s+"
-            r"(?:at\s+|named?\s+|located\s+at\s+)?(?:[a-zA-Z]:\\|/(?:etc|var|home|tmp|usr|root|windows|system))\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Instruction to access, modify, or delete filesystem paths.",
-    ),
-    # "Send an email / make an HTTP request / open a socket"
-    (
-        re.compile(
-            r"\b(?:send\s+an?\s+email|make\s+(?:an?\s+)?(?:http|api|network)\s+(?:request|call)|"
-            r"open\s+(?:a\s+)?(?:socket|connection|port)|"
-            r"connect\s+to\s+(?:a\s+)?(?:database|server|remote))\b",
-            re.IGNORECASE,
-        ),
-        "medium",
-        "Instruction to initiate external network activity.",
-    ),
-    # "Install <package> / pip install / npm install"
-    # Matches imperative commands to install packages or execute package managers.
-    (
-        re.compile(
-            r"\b(?:install|download\s+and\s+install)\s+"
-            r"(?:(?:an?|the)\s+)?(?:[a-zA-Z0-9_\-'\"]+\s+)*(?:package|module|library|dependency)\b.*?\b(?:using|with|via)\s+(?:pip|npm|apt|yum|brew|choco)\b|"
-            r"\b(?:pip|npm|apt|yum|brew|choco)\s+install\b|"
-            r"\b(?:run|execute)\s+(?:pip|npm|apt|yum|brew|choco)\s+install\b|"
-            r"\b(?:install|setup)\s+(?:(?:an?|the)\s+)?(?:[a-zA-Z0-9_\-'\"]+\s+)*(?:unverified|third-party|untrusted|malicious)\b.*?\bpackage\b",
-            re.IGNORECASE,
-        ),
-        "high",
-        "Instruction to install packages or execute package managers.",
-    ),
-]
-
-
-# ---------------------------------------------------------------------------
-# Main detection function
-# ---------------------------------------------------------------------------
-
-def detect_with_rules(text: str) -> list[dict[str, Any]]:
-    """Scan *text* for potential prompt-injection indicators using rules.
-
-    Parameters
-    ----------
-    text:
-        The untrusted input to analyse.  This text is treated as **data**
-        and is never executed.
-
-    Returns
-    -------
-    list[dict]:
-        A list of finding dicts.  Each contains the keys ``detector``,
-        ``category``, ``severity``, ``evidence``, and ``matched_indicator``.
-        An empty list means no indicators were detected (which does **not**
-        guarantee the input is safe — rule-based detection has inherent
-        limitations).
-
-    Notes
-    -----
-    - The function normalises text for matching but preserves the original
-      wording in the ``evidence`` field.
-    - Duplicate findings (same category + same indicator description) are
-      suppressed.
-    - Very long inputs are safely handled; the function does not attempt to
-      store or log the full input.
+    Returns:
+        A list of findings as dictionaries matching the Finding schema.
+        Returns an empty list if no indicators are found.
     """
     if not text or not text.strip():
         return []
 
-    # Normalize for pattern matching; keep original for evidence extraction.
-    normalized = _normalize(text)
+    normalized_text = _normalize_text(text)
+    lower_normalized = normalized_text.lower()
 
-    # Collect all pattern groups with their categories.
-    _pattern_groups: list[tuple[str, list[tuple[re.Pattern[str], str, str]]]] = [
-        ("instruction_override", _INSTRUCTION_OVERRIDE_PATTERNS),
-        ("secret_extraction", _SECRET_EXTRACTION_PATTERNS),
-        ("data_exfiltration", _DATA_EXFILTRATION_PATTERNS),
-        ("unauthorized_tool_use", _UNAUTHORIZED_TOOL_USE_PATTERNS),
-    ]
+    findings: List[Dict[str, Any]] = []
+    seen_indicators: set[str] = set()
 
-    findings: list[dict[str, Any]] = []
-    # Track (category, indicator_description) to avoid duplicates.
-    seen: set[tuple[str, str]] = set()
+    for rule in RULE_CATALOG:
+        indicator = rule.indicator.lower()
+        if indicator in seen_indicators:
+            continue
 
-    for category, patterns in _pattern_groups:
-        for pattern, severity, indicator_desc in patterns:
-            match = pattern.search(normalized)
-            if match is None:
-                continue
-
-            dedup_key = (category, indicator_desc)
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
-
-            evidence = _extract_evidence(
-                text, match.start(), match.end()
-            )
-
+        # Look for indicator in the normalized lowercase text
+        match_idx = lower_normalized.find(indicator)
+        if match_idx != -1:
+            evidence = _extract_evidence(normalized_text, match_idx, len(indicator))
             findings.append(
-                _make_finding(
-                    category=category,
-                    severity=severity,
-                    evidence=evidence,
-                    matched_indicator=indicator_desc,
-                )
+                {
+                    "detector": "rule_engine",
+                    "category": rule.category.value,
+                    "severity": rule.severity.value,
+                    "evidence": evidence,
+                    "matched_indicator": rule.indicator,
+                }
             )
+            seen_indicators.add(indicator)
 
     return findings

@@ -1,287 +1,319 @@
-"""Policy engine for PromptFence.
+"""Configurable policy engine for PromptFence.
 
-The policy engine is deliberately **independent** of detector implementations.
-It receives a list of findings (from any detector or merger) along with
-optional detector status information, and returns a deterministic risk
-assessment with a decision.
+This module evaluates security findings against configurable policy rules
+to arrive at an enforcement decision ('allow', 'review', or 'block'),
+a deterministic heuristic risk score (0-100), and an explanatory rationale.
 
-Scoring rules
--------------
-- No findings and all detectors healthy → ``allow``, risk score 0.
-- Each finding adds points based on severity and category.
-- ``instruction_override`` alone is capped at ``review`` (never blocks alone) to
-  reduce false positives on benign role-play or system prompt discussions.
-- Multi-category bonus (+10) is applied when findings span distinct attack categories,
-  suggesting coordinated or multi-vector manipulation.
-- Contextual discounts are applied by the policy engine when evidence reflects benign
-  task parameters (e.g. email drafts, calendar invites, flight filters) rather than
-  system instructions or safety constraints.
-- Unverified model evidence and low-confidence findings are discounted.
-- Final score is clamped to [0, 100].
-
-Decision thresholds
--------------------
-    0–24  → ``allow``
-   25–59  → ``review``
-   60–100 → ``block`` (capped at ``review`` if only instruction_override is present)
-
-Degraded operation / Failure handling
--------------------------------------
-- Detector failure is **never** interpreted as proof of safety.
-- When an active detector reports ``unavailable`` or ``invalid_response``:
-  - If rule findings or remaining evidence already warrant ``block`` or ``review``,
-    that decision is preserved.
-  - If no findings were detected (which would normally produce ``allow``), the policy
-    engine escalates the decision to ``review`` (risk score at least 25) with a clear
-    degraded-scan explanation.
-  - Requests are not blocked indiscriminately solely due to model unavailability.
-
-Limitations
------------
-- Scoring is heuristic and deterministic; it does not guarantee detection of novel,
-  obfuscated, or multi-turn attacks.
-- Confidence scores from models are uncalibrated and are not used as true probabilities.
-- Human review is recommended whenever the engine returns ``review`` or operates in a degraded state.
+Supports three policy enforcement modes:
+- permissive: Permits low-severity indicators; reserves block for confirmed serious threats.
+- balanced: Baseline security; blocks high-severity serious threats; flags overrides and low/medium findings for review.
+- strict: Zero-trust; blocks all high-severity overrides immediately and blocks medium-severity serious threats.
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Union
 
+from app.schemas import Decision, FindingCategory, FindingSeverity, PolicyMode
 
-# ---------------------------------------------------------------------------
-# Severity → base score mapping
-# ---------------------------------------------------------------------------
-
-_SEVERITY_SCORES: dict[str, int] = {
-    "low": 10,
-    "medium": 20,
-    "high": 35,
+# Category groupings for policy enforcement
+SERIOUS_ATTACK_CATEGORIES: Set[str] = {
+    FindingCategory.SECRET_EXTRACTION.value,
+    FindingCategory.DATA_EXFILTRATION.value,
+    FindingCategory.UNAUTHORIZED_TOOL_USE.value,
 }
 
-# ---------------------------------------------------------------------------
-# Category modifiers
-# ---------------------------------------------------------------------------
-
-_CATEGORY_WEIGHT: dict[str, float] = {
-    "instruction_override": 0.75,
-    "secret_extraction": 1.0,
-    "data_exfiltration": 1.0,
-    "unauthorized_tool_use": 1.0,
+# Base heuristic point allocations by severity
+SEVERITY_WEIGHTS: Dict[str, int] = {
+    FindingSeverity.LOW.value: 15,
+    FindingSeverity.MEDIUM.value: 35,
+    FindingSeverity.HIGH.value: 60,
 }
 
-_MULTI_CATEGORY_BONUS: int = 10
-
-# ---------------------------------------------------------------------------
-# Decision thresholds
-# ---------------------------------------------------------------------------
-
-_REVIEW_THRESHOLD: int = 25
-_BLOCK_THRESHOLD: int = 60
-
-
-# ---------------------------------------------------------------------------
-# Contextual evaluation helpers
-# ---------------------------------------------------------------------------
-
-_ADVERSARIAL_TARGETS_PATTERN = re.compile(
-    r"\b(?:instructions?|prompts?|rules?|guidelines?|safety|policies|policy|"
-    r"constraints?|directives?|unfiltered|unrestricted|jailbreak|developer\s+mode|"
-    r"dan|persona|bypass|system\s+message)\b",
-    re.IGNORECASE,
-)
-
-_TASK_ARTIFACTS_PATTERN = re.compile(
-    r"\b(?:drafts?|emails?|calendar(?:\s+invites?|\s+events?)?|meetings?|appointments?|"
-    r"schedules?|flights?(?:\s+search)?|hotel|bookings?|search\s+(?:parameters?|filters?)|"
-    r"query\s+parameters?)\b",
-    re.IGNORECASE,
-)
+# Category-specific heuristic threat adjustments
+CATEGORY_ADJUSTMENTS: Dict[str, int] = {
+    FindingCategory.INSTRUCTION_OVERRIDE.value: 5,
+    FindingCategory.SECRET_EXTRACTION.value: 10,
+    FindingCategory.DATA_EXFILTRATION.value: 15,
+    FindingCategory.UNAUTHORIZED_TOOL_USE.value: 15,
+}
 
 
-def _is_benign_task_context(category: str, evidence: str, indicator: str) -> bool:
-    """Determine whether an override finding references benign task parameters rather than AI rules.
+@dataclass
+class PolicyConfig:
+    """Configurable policy parameters governing decision rules and scoring thresholds.
 
-    Returns True ONLY if:
-    1. The category is instruction_override.
-    2. The evidence/indicator explicitly targets user task artifacts (drafts, calendar, flights).
-    3. The evidence/indicator does NOT contain any adversarial targets (prompts, rules, safety).
+    Attributes:
+        mode: PolicyMode identifier.
+        block_categories: Threat categories subject to automated blocking.
+        block_isolated_override: Whether an isolated high-severity instruction override triggers block.
+        block_medium_serious: Whether medium-severity findings in serious categories trigger block.
+        allow_low_severity: Whether isolated low-severity findings are permitted without review.
+        multi_finding_compounding: Point increment per additional finding beyond the first.
+        cross_category_bonus: Additional risk increment when multiple categories are attacked.
+        block_floor_score: Minimum risk score guaranteed when a block decision is made.
+        review_floor_score: Minimum risk score assigned when a review decision is made.
+        review_ceiling_score: Maximum risk score allowed for review without triggering block.
     """
-    if category != "instruction_override":
-        return False
 
-    combined = f"{evidence} {indicator}"
-
-    # If it mentions any AI safety or prompt target, it is an attack (do not suppress)
-    if _ADVERSARIAL_TARGETS_PATTERN.search(combined):
-        return False
-
-    # If it references user task artifacts and no adversarial targets, it is benign task management
-    if _TASK_ARTIFACTS_PATTERN.search(combined):
-        return True
-
-    return False
+    mode: PolicyMode = PolicyMode.BALANCED
+    block_categories: Set[str] = field(default_factory=lambda: set(SERIOUS_ATTACK_CATEGORIES))
+    block_isolated_override: bool = False
+    block_medium_serious: bool = False
+    allow_low_severity: bool = False
+    multi_finding_compounding: int = 5
+    cross_category_bonus: int = 10
+    block_floor_score: int = 75
+    review_floor_score: int = 25
+    review_ceiling_score: int = 70
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def get_policy_config(mode: Union[PolicyMode, str] = PolicyMode.BALANCED) -> PolicyConfig:
+    """Construct a documented PolicyConfig profile for the requested mode.
+
+    Modes:
+    - permissive:
+        - Blocks high-severity in serious categories (secret_extraction, data_exfiltration, unauthorized_tool_use).
+        - Allows low-severity indicators without blocking or forcing review.
+        - Review for medium-severity and isolated overrides.
+        - Score floors: block=70, review=20.
+    - balanced (default):
+        - Standard baseline policy.
+        - Blocks high-severity serious categories.
+        - Blocks high-severity instruction override if secondary attack evidence exists.
+        - Review for isolated override and low/medium findings.
+        - Score floors: block=75, review=25.
+    - strict:
+        - Zero-trust defense posture.
+        - Immediately blocks ANY high-severity finding (including isolated instruction overrides).
+        - Immediately blocks medium-severity findings in serious attack categories.
+        - Review for remaining low/medium indicators.
+        - Score floors: block=80, review=35.
+    """
+    mode_str = mode.value if isinstance(mode, PolicyMode) else str(mode).lower()
+
+    if mode_str == PolicyMode.PERMISSIVE.value:
+        return PolicyConfig(
+            mode=PolicyMode.PERMISSIVE,
+            block_categories=set(SERIOUS_ATTACK_CATEGORIES),
+            block_isolated_override=False,
+            block_medium_serious=False,
+            allow_low_severity=True,
+            block_floor_score=70,
+            review_floor_score=20,
+            review_ceiling_score=60,
+        )
+    elif mode_str == PolicyMode.STRICT.value:
+        return PolicyConfig(
+            mode=PolicyMode.STRICT,
+            block_categories=set(SERIOUS_ATTACK_CATEGORIES),
+            block_isolated_override=True,
+            block_medium_serious=True,
+            allow_low_severity=False,
+            block_floor_score=80,
+            review_floor_score=35,
+            review_ceiling_score=75,
+        )
+    else:  # Default: BALANCED
+        return PolicyConfig(
+            mode=PolicyMode.BALANCED,
+            block_categories=set(SERIOUS_ATTACK_CATEGORIES),
+            block_isolated_override=False,
+            block_medium_serious=False,
+            allow_low_severity=False,
+            block_floor_score=75,
+            review_floor_score=25,
+            review_ceiling_score=70,
+        )
+
+
+class PolicyEngine:
+    """Evaluates findings to produce decisions and heuristic risk scores."""
+
+    def __init__(
+        self,
+        config: Optional[PolicyConfig] = None,
+        mode: Optional[Union[PolicyMode, str]] = None,
+    ) -> None:
+        if config is not None:
+            self.config = config
+        elif mode is not None:
+            self.config = get_policy_config(mode)
+        else:
+            self.config = get_policy_config(PolicyMode.BALANCED)
+
+    @staticmethod
+    def _extract_field(finding: Any, field_name: str) -> str:
+        """Safely extract a string value from a dict or Pydantic finding object."""
+        if isinstance(finding, dict):
+            val = finding.get(field_name, "")
+        else:
+            val = getattr(finding, field_name, "")
+
+        if hasattr(val, "value"):
+            return str(val.value)
+        return str(val)
+
+    def calculate_risk_score(self, findings: List[Any], decision: Decision) -> int:
+        """Compute a deterministic heuristic risk score between 0 and 100."""
+        if not findings or decision == Decision.ALLOW:
+            return 0
+
+        score = 0
+        categories_seen: Set[str] = set()
+
+        for idx, finding in enumerate(findings):
+            cat = self._extract_field(finding, "category")
+            sev = self._extract_field(finding, "severity")
+
+            score += SEVERITY_WEIGHTS.get(sev, 10)
+            score += CATEGORY_ADJUSTMENTS.get(cat, 5)
+
+            if cat:
+                categories_seen.add(cat)
+
+            if idx > 0 and (idx * self.config.multi_finding_compounding) <= 15:
+                score += self.config.multi_finding_compounding
+
+        if len(categories_seen) >= 2:
+            score += self.config.cross_category_bonus
+
+        if decision == Decision.BLOCK:
+            final_score = max(self.config.block_floor_score, score)
+        elif decision == Decision.REVIEW:
+            final_score = max(self.config.review_floor_score, min(self.config.review_ceiling_score, score))
+        else:
+            final_score = min(20, score)
+
+        return max(0, min(100, int(final_score)))
+
+    def evaluate(self, findings: List[Any]) -> Dict[str, Any]:
+        """Evaluate a list of findings against the active policy profile."""
+        if not findings:
+            return {
+                "decision": Decision.ALLOW.value,
+                "risk_score": 0,
+                "explanation": f"[{self.config.mode.value.upper()}] No injection indicators detected. Input is allowed.",
+            }
+
+        high_findings: List[Any] = []
+        medium_findings: List[Any] = []
+        low_findings: List[Any] = []
+
+        for f in findings:
+            sev = self._extract_field(f, "severity")
+            if sev == FindingSeverity.HIGH.value:
+                high_findings.append(f)
+            elif sev == FindingSeverity.MEDIUM.value:
+                medium_findings.append(f)
+            else:
+                low_findings.append(f)
+
+        # 1. Serious high-severity findings (immediate block across all modes)
+        serious_high = [
+            f
+            for f in high_findings
+            if self._extract_field(f, "category") in self.config.block_categories
+        ]
+
+        # 2. Instruction override high-severity findings
+        override_high = [
+            f
+            for f in high_findings
+            if self._extract_field(f, "category") == FindingCategory.INSTRUCTION_OVERRIDE.value
+        ]
+
+        # 3. Medium-severity in serious categories
+        serious_medium = [
+            f
+            for f in medium_findings
+            if self._extract_field(f, "category") in self.config.block_categories
+        ]
+
+        if serious_high:
+            matched_cats = sorted({self._extract_field(f, "category") for f in serious_high})
+            decision = Decision.BLOCK
+            explanation = (
+                f"[{self.config.mode.value.upper()}] Blocked: High-severity indicator detected in serious attack category "
+                f"({', '.join(matched_cats)}). Immediate containment enforced."
+            )
+        elif override_high:
+            serious_secondary = [
+                f for f in findings if self._extract_field(f, "category") in self.config.block_categories
+            ]
+            has_multiple_high = len(high_findings) > 1
+
+            # Strict mode blocks isolated overrides; balanced blocks if secondary evidence exists
+            if self.config.block_isolated_override or serious_secondary or has_multiple_high:
+                decision = Decision.BLOCK
+                reason = (
+                    "isolated override blocked under strict policy"
+                    if self.config.block_isolated_override and not (serious_secondary or has_multiple_high)
+                    else "high-severity override detected alongside secondary attack evidence"
+                )
+                explanation = f"[{self.config.mode.value.upper()}] Blocked: {reason}."
+            else:
+                decision = Decision.REVIEW
+                explanation = (
+                    f"[{self.config.mode.value.upper()}] Review required: High-severity instruction override detected without "
+                    "secondary exploitation indicators. Manual inspection recommended."
+                )
+        elif self.config.block_medium_serious and serious_medium:
+            # Strict mode blocks medium-severity serious threats
+            matched_cats = sorted({self._extract_field(f, "category") for f in serious_medium})
+            decision = Decision.BLOCK
+            explanation = (
+                f"[{self.config.mode.value.upper()}] Blocked: Medium-severity finding in serious category "
+                f"({', '.join(matched_cats)}) blocked under zero-trust strict policy."
+            )
+        elif medium_findings:
+            decision = Decision.REVIEW
+            explanation = (
+                f"[{self.config.mode.value.upper()}] Review required: Detected {len(findings)} indicator(s) "
+                "with maximum severity 'medium'. Verification recommended."
+            )
+        elif low_findings:
+            if self.config.allow_low_severity:
+                # Permissive mode permits low-severity indicators
+                decision = Decision.ALLOW
+                explanation = (
+                    f"[{self.config.mode.value.upper()}] Allowed: Low-severity indicator detected but permitted "
+                    "under permissive policy profile."
+                )
+            else:
+                decision = Decision.REVIEW
+                explanation = (
+                    f"[{self.config.mode.value.upper()}] Review required: Low-severity indicator detected. "
+                    "Verification recommended."
+                )
+        else:
+            decision = Decision.ALLOW
+            explanation = f"[{self.config.mode.value.upper()}] Input evaluated without actionable policy violations."
+
+        risk_score = self.calculate_risk_score(findings, decision)
+
+        return {
+            "decision": decision.value,
+            "risk_score": risk_score,
+            "explanation": f"{explanation} Risk score: {risk_score}/100 (deterministic heuristic).",
+        }
 
 
 def evaluate_policy(
-    findings: list[dict[str, Any]],
-    *,
-    detector_statuses: list[dict[str, Any] | Any] | None = None,
-    mode: str | None = None,
-) -> dict[str, Any]:
-    """Evaluate detector findings and health status to produce a policy decision.
+    findings: List[Any],
+    mode: Optional[Union[PolicyMode, str]] = None,
+    config: Optional[PolicyConfig] = None,
+) -> Dict[str, Any]:
+    """Convenience function evaluating findings using the specified policy mode or config.
 
-    Parameters
-    ----------
-    findings:
-        List of finding dicts from one or more detectors. Each finding must
-        contain at least ``category`` and ``severity``.
-    detector_statuses:
-        Optional list of detector status objects or dicts (e.g. from
-        ``DetectorStatus``).
-    mode:
-        Optional scan mode identifier (``"rules_only"``, ``"llm_only"``, ``"hybrid"``).
+    Args:
+        findings: List of finding dicts or Finding model instances.
+        mode: Optional PolicyMode string or enum ('permissive', 'balanced', 'strict').
+        config: Optional custom PolicyConfig instance.
 
-    Returns
-    -------
-    dict:
-        A dict with keys:
-        - ``risk_score`` (int, 0–100)
-        - ``decision`` (``"allow"`` | ``"review"`` | ``"block"``)
-        - ``reasons`` (list[str])
+    Returns:
+        Dict with keys 'decision', 'risk_score', and 'explanation'.
     """
-    reasons: list[str] = []
-    raw_score: float = 0.0
-    categories_seen: set[str] = set()
-
-    # --- 1. Evaluate Findings ---
-    if findings:
-        for finding in findings:
-            category = finding.get("category", "unknown")
-            severity = finding.get("severity", "low")
-            indicator = finding.get("matched_indicator", "unknown pattern")
-            evidence = finding.get("evidence", "")
-            confidence = finding.get("confidence")
-            evidence_verified = finding.get("evidence_verified")
-            detector = finding.get("detector", "")
-
-            base = _SEVERITY_SCORES.get(severity, 10)
-            weight = _CATEGORY_WEIGHT.get(category, 1.0)
-
-            # Check contextual benign task management (Task 4)
-            if _is_benign_task_context(category, evidence, indicator):
-                weight = 0.0
-                reasons.append(
-                    f"[CONTEXT DISCOUNT] {category}: Evidence targets task parameters "
-                    f"('{evidence[:40]}…') rather than system instructions or safety constraints; discounted."
-                )
-            else:
-                # Evidence verification discount (Task 5)
-                if evidence_verified is False:
-                    weight *= 0.5
-                    reasons.append(
-                        f"[UNVERIFIED EVIDENCE] {category}: Model evidence was not found in input; "
-                        "risk contribution discounted."
-                    )
-
-                # Low model confidence discount (Task 5)
-                if confidence is not None and confidence < 0.6:
-                    weight *= 0.7
-                    reasons.append(
-                        f"[LOW CONFIDENCE] {category}: Model reported low confidence ({confidence:.2f}); "
-                        "risk contribution discounted."
-                    )
-
-                # Note multi-detector concurrence
-                if "rules,llm" in detector:
-                    reasons.append(
-                        f"[CONFIRMED] {category}: Concurrence between deterministic rules and model detector."
-                    )
-
-            contribution = base * weight
-            raw_score += contribution
-
-            if contribution > 0:
-                categories_seen.add(category)
-                reasons.append(f"[{severity.upper()}] {category}: {indicator}")
-
-        # Multi-category bonus
-        if len(categories_seen) > 1:
-            raw_score += _MULTI_CATEGORY_BONUS
-            reasons.append(
-                f"Multiple indicator categories detected ({len(categories_seen)}); "
-                "risk score increased."
-            )
-    else:
-        reasons.append("No indicators detected.")
-
-    # Special handling: instruction_override alone caps at review to avoid false-positive blocks
-    only_override = bool(categories_seen and categories_seen == {"instruction_override"})
-
-    risk_score = max(0, min(100, int(round(raw_score))))
-
-    # Base decision from evidence (clean thresholds)
-    if risk_score >= _BLOCK_THRESHOLD:
-        decision = "review" if only_override else "block"
-    elif risk_score >= _REVIEW_THRESHOLD:
-        decision = "review"
-    else:
-        decision = "allow"
-
-    if decision == "allow" and findings:
-        reasons.append(
-            "Risk score is below the review threshold; allowing with caution."
-        )
-
-    # --- 2. Check Detector Health & Handle Failures ---
-    has_detector_failure = False
-    if detector_statuses:
-        for ds in detector_statuses:
-            status_val = (
-                getattr(ds, "status", None)
-                or (ds.get("status") if isinstance(ds, dict) else None)
-                or "ok"
-            )
-            name_val = (
-                getattr(ds, "name", None)
-                or (ds.get("name") if isinstance(ds, dict) else None)
-                or "detector"
-            )
-            err_val = (
-                getattr(ds, "error", None)
-                or (ds.get("error") if isinstance(ds, dict) else None)
-            )
-
-            if status_val in ("unavailable", "invalid_response", "timeout", "error"):
-                has_detector_failure = True
-                err_suffix = f": {err_val}" if err_val else ""
-                reasons.append(
-                    f"Detector '{name_val}' failed ({status_val}{err_suffix}). "
-                    "Scan operated in degraded mode."
-                )
-
-    # Detector failure must never be mistaken for proof of safety!
-    if has_detector_failure:
-        if decision == "allow":
-            decision = "review"
-            risk_score = max(risk_score, _REVIEW_THRESHOLD)
-            reasons.append(
-                "Degraded scan: one or more detectors failed; input cannot be confirmed safe. "
-                "Escalating to review."
-            )
-        else:
-            reasons.append(
-                f"Degraded scan noted; existing findings justified decision '{decision}'."
-            )
-
-    return {
-        "risk_score": risk_score,
-        "decision": decision,
-        "reasons": reasons,
-    }
+    engine = PolicyEngine(config=config, mode=mode)
+    return engine.evaluate(findings)

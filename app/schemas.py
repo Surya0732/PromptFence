@@ -1,209 +1,284 @@
-"""Pydantic schemas for PromptFence API requests and responses.
-
-These schemas define the data contracts for the /scan endpoint,
-including input validation, finding structure, and response format.
-"""
+"""Structured schemas and models for PromptFence."""
 
 from __future__ import annotations
 
-import uuid
-from typing import Literal, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
-#: Maximum number of characters accepted in a single scan request.
-#: This limit exists to prevent denial-of-service via extremely large payloads.
-#: Adjust as needed; 20 000 chars covers most realistic prompt inputs.
-MAX_INPUT_LENGTH: int = 20_000
+class Decision(str, Enum):
+    """Permitted policy engine and scan decisions."""
 
-#: Valid detection categories produced by detectors.
-VALID_CATEGORIES = frozenset(
-    {
-        "instruction_override",
-        "secret_extraction",
-        "data_exfiltration",
-        "unauthorized_tool_use",
-    }
-)
-
-#: Valid severity levels.
-VALID_SEVERITIES = frozenset({"low", "medium", "high"})
-
-#: Valid policy decisions.
-VALID_DECISIONS = frozenset({"allow", "review", "block"})
-
-#: Supported detection modes.
-SUPPORTED_MODES = frozenset({"rules_only", "llm_only", "hybrid"})
+    ALLOW = "allow"
+    REVIEW = "review"
+    BLOCK = "block"
 
 
-# ---------------------------------------------------------------------------
-# Request schemas
-# ---------------------------------------------------------------------------
+class PolicyMode(str, Enum):
+    """Supported policy evaluation sensitivity tiers."""
+
+    PERMISSIVE = "permissive"
+    BALANCED = "balanced"
+    STRICT = "strict"
+
+
+class DetectorMode(str, Enum):
+    """Supported detector pipeline modes."""
+
+    RULES = "rules"
+    LLM = "llm"
+    HYBRID = "hybrid"
+
+
+class FindingCategory(str, Enum):
+    """Predefined categories of prompt injection / security findings."""
+
+    INSTRUCTION_OVERRIDE = "instruction_override"
+    SECRET_EXTRACTION = "secret_extraction"
+    DATA_EXFILTRATION = "data_exfiltration"
+    UNAUTHORIZED_TOOL_USE = "unauthorized_tool_use"
+
+
+class FindingSeverity(str, Enum):
+    """Predefined finding severity levels."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ToolStatus(str, Enum):
+    """Execution status for agent mock-tool actions."""
+
+    EXECUTED = "executed"
+    BLOCKED_BY_POLICY = "blocked_by_policy"
+    BLOCKED_PENDING_REVIEW = "blocked_pending_review"
+    REJECTED_UNKNOWN_TOOL = "rejected_unknown_tool"
+    REJECTED_INVALID_ARGUMENTS = "rejected_invalid_arguments"
 
 
 class ScanRequest(BaseModel):
-    """Incoming scan request body.
-
-    Attributes:
-        text: The untrusted input text to analyse.
-        mode: Detection mode — ``"rules_only"``, ``"llm_only"``, or ``"hybrid"``.
-    """
+    """Incoming scan request payload."""
 
     text: str = Field(
         ...,
         min_length=1,
-        max_length=MAX_INPUT_LENGTH,
-        description=(
-            "The text to scan for potential prompt-injection indicators. "
-            f"Must be between 1 and {MAX_INPUT_LENGTH:,} characters."
-        ),
+        max_length=50000,
+        description="The prompt or text to inspect for injection indicators.",
     )
-    mode: Literal["rules_only", "llm_only", "hybrid"] = Field(
-        default="rules_only",
-        description=(
-            "Detection mode. 'rules_only' uses deterministic patterns, "
-            "'llm_only' uses a local Gemma 4 model via Ollama, and "
-            "'hybrid' combines both detectors."
-        ),
+    source_type: Optional[str] = Field(
+        default="text",
+        max_length=100,
+        description="Origin context of the text (e.g. 'text', 'user_input', 'retrieved_context').",
+    )
+    policy_mode: PolicyMode = Field(
+        default=PolicyMode.BALANCED,
+        description="Policy enforcement profile: 'permissive', 'balanced', or 'strict'.",
+    )
+    detector_mode: DetectorMode = Field(
+        default=DetectorMode.RULES,
+        description="Detector execution mode: 'rules', 'llm', or 'hybrid'.",
     )
 
-
-# ---------------------------------------------------------------------------
-# Finding schema
-# ---------------------------------------------------------------------------
+    @field_validator("text")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        """Ensure text is not empty or composed solely of whitespace."""
+        if not value or not value.strip():
+            raise ValueError("text must contain non-whitespace characters")
+        return value
 
 
 class Finding(BaseModel):
-    """A single detection finding produced by a detector.
-
-    Attributes:
-        detector: Name of the detector that produced this finding (e.g. ``"rules"`` or ``"llm"``).
-        category: Detection category.
-        severity: Severity level of the finding.
-        evidence: A short, relevant excerpt from the input that triggered the finding.
-        matched_indicator: Human-readable explanation of the pattern that matched.
-        confidence: Optional confidence score from the LLM (0.0–1.0).  Not present for rule findings.
-    """
+    """Structured detection finding emitted by a detector."""
 
     detector: str = Field(
-        ..., description="Name of the detector that produced this finding."
+        default="rule_engine",
+        description="Identifier of the detector that discovered the indicator.",
     )
-    category: str = Field(..., description="Detection category.")
-    severity: str = Field(..., description="Severity level: low, medium, or high.")
+    category: FindingCategory = Field(
+        ...,
+        description="Predefined category of the detected indicator.",
+    )
+    severity: FindingSeverity = Field(
+        ...,
+        description="Predefined severity level of the finding.",
+    )
     evidence: str = Field(
         ...,
-        description="Short excerpt from the input that triggered the finding.",
+        description="Contextual snippet from the input text containing the match.",
     )
     matched_indicator: str = Field(
         ...,
-        description="Brief explanation of the matched pattern.",
+        description="The specific signature or phrase rule that triggered.",
     )
-    confidence: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="LLM confidence score (0.0–1.0). Only present for LLM findings.",
-    )
-    evidence_verified: Optional[bool] = Field(
-        default=None,
-        description="Whether model-provided evidence was verified against the submitted input.",
-    )
-
-    @field_validator("category")
-    @classmethod
-    def validate_category(cls, v: str) -> str:
-        if v not in VALID_CATEGORIES:
-            raise ValueError(
-                f"Invalid category '{v}'. Must be one of: {sorted(VALID_CATEGORIES)}"
-            )
-        return v
-
-    @field_validator("severity")
-    @classmethod
-    def validate_severity(cls, v: str) -> str:
-        if v not in VALID_SEVERITIES:
-            raise ValueError(
-                f"Invalid severity '{v}'. Must be one of: {sorted(VALID_SEVERITIES)}"
-            )
-        return v
-
-
-# ---------------------------------------------------------------------------
-# Detector status
-# ---------------------------------------------------------------------------
-
-
-class DetectorStatus(BaseModel):
-    """Status of an individual detector used during a scan."""
-
-    name: str = Field(..., description="Detector name (e.g. 'rules', 'llm').")
-    status: str = Field(
-        default="ok",
-        description="Detector execution status: 'ok', 'unavailable', or 'invalid_response'.",
-    )
-    available: bool = Field(
-        default=True,
-        description="Whether the detector was available and completed successfully.",
-    )
-    error: Optional[str] = Field(
-        default=None,
-        description="Sanitized error message if the detector was unavailable or failed.",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Response schema
-# ---------------------------------------------------------------------------
 
 
 class ScanResponse(BaseModel):
-    """Response returned by the ``/scan`` endpoint.
+    """Validated response payload for a completed scan."""
 
-    Attributes:
-        scan_id: Unique identifier for this scan operation.
-        risk_score: Aggregate risk score from 0 (safe) to 100 (critical).
-        decision: Policy decision — ``"allow"``, ``"review"``, or ``"block"``.
-        findings: List of detection findings.
-        reasons: Human-readable explanations for the policy decision.
-        mode: The detection mode that was used.
-        processing_time_ms: Processing time in milliseconds.
-        detector_status: Status of each detector used.
-    """
-
-    scan_id: str = Field(
-        default_factory=lambda: str(uuid.uuid4()),
-        description="Unique identifier for this scan.",
+    scan_id: UUID = Field(
+        default_factory=uuid4,
+        description="Unique identifier for the scan event.",
     )
     risk_score: int = Field(
         ...,
         ge=0,
         le=100,
-        description="Aggregate risk score from 0 (safe) to 100 (critical).",
+        description="Deterministic heuristic risk score between 0 and 100.",
     )
-    decision: str = Field(
-        ..., description="Policy decision: allow, review, or block."
+    decision: Decision = Field(
+        ...,
+        description="Action decision determined by the policy engine: allow, review, or block.",
     )
-    findings: list[Finding] = Field(
+    findings: List[Finding] = Field(
         default_factory=list,
-        description="Detection findings from all active detectors.",
+        description="List of detected indicator findings.",
     )
-    reasons: list[str] = Field(
+    explanation: str = Field(
+        ...,
+        description="Human-readable explanation of the decision and risk rationale.",
+    )
+    latency_ms: float = Field(
+        ...,
+        ge=0.0,
+        description="Server-side processing latency in milliseconds (pipeline execution).",
+    )
+    detector_mode: DetectorMode = Field(
+        default=DetectorMode.RULES,
+        description="Detector execution mode applied for this scan.",
+    )
+    detector_status: str = Field(
+        default="ok",
+        description="Operational status of the detector pipeline ('ok', 'degraded', 'error').",
+    )
+
+
+class HealthResponse(BaseModel):
+    """Service health response."""
+
+    status: str = Field(default="ok", description="Operational status.")
+    service: str = Field(default="PromptFence", description="Service identifier.")
+    version: str = Field(default="0.1.0", description="Application version.")
+
+
+class TelemetryResponse(BaseModel):
+    """Real in-process telemetry statistics recorded by the active server instance."""
+
+    total_scans: int = Field(..., ge=0, description="Total number of scan operations executed.")
+    allowed_count: int = Field(..., ge=0, description="Number of scans resulting in 'allow'.")
+    reviewed_count: int = Field(..., ge=0, description="Number of scans resulting in 'review'.")
+    blocked_count: int = Field(..., ge=0, description="Number of scans resulting in 'block'.")
+    total_findings: int = Field(..., ge=0, description="Total security findings identified.")
+    avg_latency_ms: float = Field(..., ge=0.0, description="Mean pipeline latency in milliseconds.")
+    last_latency_ms: float = Field(..., ge=0.0, description="Most recent pipeline latency in milliseconds.")
+
+
+class ToolAction(BaseModel):
+    """Proposed tool action descriptor for agent simulation."""
+
+    tool_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Name of the mock tool proposed for execution (e.g. 'approve_invoice').",
+    )
+    arguments: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Keyword arguments supplied for the mock tool invocation.",
+    )
+
+
+class SimulateRequest(BaseModel):
+    """Payload for simulating agent action with untrusted content inspection."""
+
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=50000,
+        description="Untrusted prompt or document text to inspect before tool invocation.",
+    )
+    proposed_tool: ToolAction = Field(
+        ...,
+        description="The action the agent proposes to take based on the untrusted input.",
+    )
+    policy_mode: PolicyMode = Field(
+        default=PolicyMode.BALANCED,
+        description="Enforcement policy tier: 'permissive', 'balanced', or 'strict'.",
+    )
+    detector_mode: DetectorMode = Field(
+        default=DetectorMode.RULES,
+        description="Detector execution mode: 'rules', 'llm', or 'hybrid'.",
+    )
+    source_type: Optional[str] = Field(
+        default="agent_input",
+        max_length=100,
+        description="Contextual source of the input text.",
+    )
+
+    @field_validator("text")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        """Ensure input text is non-empty."""
+        if not value or not value.strip():
+            raise ValueError("text must contain non-whitespace characters")
+        return value
+
+
+class SimulateResponse(BaseModel):
+    """Result of agent simulation including policy outcome and execution record."""
+
+    scan_id: UUID = Field(
+        default_factory=uuid4,
+        description="Unique identifier for the inspection scan.",
+    )
+    decision: Decision = Field(
+        ...,
+        description="Policy enforcement decision: 'allow', 'review', or 'block'.",
+    )
+    risk_score: int = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Deterministic heuristic risk score.",
+    )
+    findings: List[Finding] = Field(
         default_factory=list,
-        description="Human-readable explanations for the policy decision.",
+        description="Security findings detected in the untrusted text.",
     )
-    mode: str = Field(
-        default="rules_only",
-        description="Detection mode that was used.",
+    explanation: str = Field(
+        ...,
+        description="Explanation of policy decision.",
     )
-    processing_time_ms: Optional[float] = Field(
+    tool_proposed: ToolAction = Field(
+        ...,
+        description="The tool action originally requested by the agent.",
+    )
+    tool_executed: bool = Field(
+        ...,
+        description="Whether the mock tool was actually executed in backend code.",
+    )
+    tool_status: ToolStatus = Field(
+        ...,
+        description="Status code describing tool outcome.",
+    )
+    execution_result: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Total processing time in milliseconds.",
+        description="Output emitted by the mock tool if execution succeeded, or error details.",
     )
-    detector_status: list[DetectorStatus] = Field(
-        default_factory=list,
-        description="Status of each detector used during the scan.",
+    latency_ms: float = Field(
+        ...,
+        ge=0.0,
+        description="Total processing latency in milliseconds.",
+    )
+    detector_mode: DetectorMode = Field(
+        default=DetectorMode.RULES,
+        description="Detector execution mode applied for this simulation.",
+    )
+    detector_status: str = Field(
+        default="ok",
+        description="Operational status of the detector pipeline ('ok', 'degraded', 'error').",
     )

@@ -1,0 +1,206 @@
+{
+  "timestamp": "20261025_100509",
+  "config": {
+    "dataset_path": "evaluation\\dataset.jsonl",
+    "total_cases": 100,
+    "policy_mode": "balanced",
+    "model_name": "qwen2.5:1.5b",
+    "modes_evaluated": [
+      "rules",
+      "llm",
+      "hybrid"
+    ],
+    "timeout_seconds": 30.0
+  },
+  "metrics": {
+    "rules": {
+      "mode": "rules",
+      "total_cases": 100,
+      "evaluated_cases": 100,
+      "error_cases": 0,
+      "coverage": 1.0,
+      "tp": 44,
+      "tn": 49,
+      "fp": 1,
+      "fn": 6,
+      "accuracy": 0.93,
+      "precision": 0.9778,
+      "recall": 0.88,
+      "f1_score": 0.9263,
+      "false_positive_rate": 0.02,
+      "false_negative_rate": 0.12,
+      "mean_latency_ms": 0.199,
+      "median_latency_ms": 0.194,
+      "category_metrics": {
+        "data_exfiltration": {
+          "total": 12,
+          "detected": 10,
+          "recall": 0.8333
+        },
+        "instruction_override": {
+          "total": 14,
+          "detected": 14,
+          "recall": 1.0
+        },
+        "none": {
+          "total": 50,
+          "correct_benign": 49,
+          "accuracy": 0.98
+        },
+        "secret_extraction": {
+          "total": 12,
+          "detected": 8,
+          "recall": 0.6667
+        },
+        "unauthorized_tool_use": {
+          "total": 12,
+          "detected": 12,
+          "recall": 1.0
+        }
+      },
+      "difficulty_metrics": {
+        "basic": {
+          "total": 37,
+          "correct": 37,
+          "accuracy": 1.0
+        },
+        "intermediate": {
+          "total": 32,
+          "correct": 32,
+          "accuracy": 1.0
+        },
+        "adversarial": {
+          "total": 31,
+          "correct": 24,
+          "accuracy": 0.7742
+        }
+      }
+    },
+    "llm": {
+      "mode": "llm",
+      "total_cases": 100,
+      "evaluated_cases": 100,
+      "error_cases": 0,
+      "coverage": 1.0,
+      "tp": 49,
+      "tn": 48,
+      "fp": 2,
+      "fn": 1,
+      "accuracy": 0.97,
+      "precision": 0.9608,
+      "recall": 0.98,
+      "f1_score": 0.9703,
+      "false_positive_rate": 0.04,
+      "false_negative_rate": 0.02,
+      "mean_latency_ms": 3821.04,
+      "median_latency_ms": 4340.941,
+      "category_metrics": {
+        "data_exfiltration": {
+          "total": 12,
+          "detected": 11,
+          "recall": 0.9167
+        },
+        "instruction_override": {
+          "total": 14,
+          "detected": 14,
+          "recall": 1.0
+        },
+        "none": {
+          "total": 50,
+          "correct_benign": 48,
+          "accuracy": 0.96
+        },
+        "secret_extraction": {
+          "total": 12,
+          "detected": 12,
+          "recall": 1.0
+        },
+        "unauthorized_tool_use": {
+          "total": 12,
+          "detected": 12,
+          "recall": 1.0
+        }
+      },
+      "difficulty_metrics": {
+        "basic": {
+          "total": 37,
+          "correct": 37,
+          "accuracy": 1.0
+        },
+        "intermediate": {
+          "total": 32,
+          "correct": 32,
+          "accuracy": 1.0
+        },
+        "adversarial": {
+          "total": 31,
+          "correct": 28,
+          "accuracy": 0.9032
+        }
+      }
+    },
+    "hybrid": {
+      "mode": "hybrid",
+      "total_cases": 100,
+      "evaluated_cases": 100,
+      "error_cases": 0,
+      "coverage": 1.0,
+      "tp": 49,
+      "tn": 47,
+      "fp": 3,
+      "fn": 1,
+      "accuracy": 0.96,
+      "precision": 0.9423,
+      "recall": 0.98,
+      "f1_score": 0.9608,
+      "false_positive_rate": 0.06,
+      "false_negative_rate": 0.02,
+      "mean_latency_ms": 3816.565,
+      "median_latency_ms": 4301.257,
+      "category_metrics": {
+        "data_exfiltration": {
+          "total": 12,
+          "detected": 11,
+          "recall": 0.9167
+        },
+        "instruction_override": {
+          "total": 14,
+          "detected": 14,
+          "recall": 1.0
+        },
+        "none": {
+          "total": 50,
+          "correct_benign": 47,
+          "accuracy": 0.94
+        },
+        "secret_extraction": {
+          "total": 12,
+          "detected": 12,
+          "recall": 1.0
+        },
+        "unauthorized_tool_use": {
+          "total": 12,
+          "detected": 12,
+          "recall": 1.0
+        }
+      },
+      "difficulty_metrics": {
+        "basic": {
+          "total": 37,
+          "correct": 37,
+          "accuracy": 1.0
+        },
+        "intermediate": {
+          "total": 32,
+          "correct": 32,
+          "accuracy": 1.0
+        },
+        "adversarial": {
+          "total": 31,
+          "correct": 27,
+          "accuracy": 0.871
+        }
+      }
+    }
+  }
+}

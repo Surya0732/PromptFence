@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PromptFence — AI Security Harness & Injection Guardrails</title>
+  <meta name="description" content="Open-source AI security harness that detects indirect prompt injection, enforces tool-action policies, and evaluates detector performance.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Main Top Navigation -->
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div class="brand-title">
+              <span>PROMPT</span>FENCE
+              <span class="version-tag">v0.2.0</span>
+            </div>
+            <div class="brand-subtitle">AI Security Harness & Guardrails</div>
+          </div>
+        </div>
+
+        <!-- Global Status Badges -->
+        <div class="system-status">
+          <div id="status-api" class="status-pill status-online" title="PromptFence Backend Status">
+            <span class="pulse-dot"></span>
+            <span class="status-label">API: Connected</span>
+          </div>
+          <div id="status-llm" class="status-pill status-neutral" title="Configured Local Ollama Model">
+            <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span class="status-label">LLM: qwen2.5:1.5b</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Navigation -->
+      <nav class="nav-tabs" role="tablist">
+        <button id="tab-btn-scanner" class="nav-tab active" data-tab="scanner" role="tab" aria-selected="true" aria-controls="view-scanner">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <span>Live Scanner</span>
+        </button>
+        <button id="tab-btn-dashboard" class="nav-tab" data-tab="dashboard" role="tab" aria-selected="false" aria-controls="view-dashboard">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="9"></rect>
+            <rect x="14" y="3" width="7" height="5"></rect>
+            <rect x="14" y="12" width="7" height="9"></rect>
+            <rect x="3" y="16" width="7" height="5"></rect>
+          </svg>
+          <span>Security Dashboard</span>
+        </button>
+        <button id="tab-btn-simulation" class="nav-tab" data-tab="simulation" role="tab" aria-selected="false" aria-controls="view-simulation">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+            <circle cx="12" cy="5" r="2"></circle>
+            <path d="M12 7v4"></path>
+            <line x1="8" y1="16" x2="8" y2="16"></line>
+            <line x1="16" y1="16" x2="16" y2="16"></line>
+          </svg>
+          <span>Agent Simulation</span>
+        </button>
+        <button id="tab-btn-playground" class="nav-tab" data-tab="playground" role="tab" aria-selected="false" aria-controls="view-playground">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span>Attack Playground</span>
+        </button>
+        <button id="tab-btn-evaluation" class="nav-tab" data-tab="evaluation" role="tab" aria-selected="false" aria-controls="view-evaluation">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10"></path>
+            <path d="M12 20V4"></path>
+            <path d="M6 20v-6"></path>
+          </svg>
+          <span>Evaluation</span>
+        </button>
+      </nav>
+    </header>
+
+    <!-- App Content Body -->
+    <main class="app-main">
+
+      <!-- ========================================================
+           TAB 1: LIVE SCANNER
+           ======================================================== -->
+      <section id="view-scanner" class="tab-view active" role="tabpanel" aria-labelledby="tab-btn-scanner">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Live Prompt Injection Scanner</h1>
+            <p class="view-subtitle">Inspect untrusted text payloads in real-time across deterministic rules, local LLM semantic analysis, or hybrid multi-signal pipeline.</p>
+          </div>
+          <div class="view-actions">
+            <button id="btn-scanner-clear" class="btn btn-secondary btn-sm" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              <span>Clear Text</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="scanner-grid">
+          <!-- Left Column: Input and Configuration -->
+          <div class="card scanner-form-card">
+            <form id="scanner-form" onsubmit="return false;">
+              <div class="form-group">
+                <div class="field-header">
+                  <label for="scanner-text" class="field-label">Untrusted Content / Prompt Text</label>
+                  <span id="scanner-char-count" class="char-count">0 / 50,000</span>
+                </div>
+                <textarea
+                  id="scanner-text"
+                  class="form-control text-area monospace"
+                  rows="7"
+                  maxlength="50000"
+                  placeholder="Paste untrusted user message, prompt injection attempt, retrieved external context, or resume text to inspect..."
+                  required
+                ></textarea>
+                <div class="quick-samples">
+                  <span class="quick-label">Load sample:</span>
+                  <button type="button" class="btn-chip" data-sample="benign">Safe Invoice</button>
+                  <button type="button" class="btn-chip" data-sample="override">Instruction Override</button>
+                  <button type="button" class="btn-chip" data-sample="secret">Secret Extraction</button>
+                  <button type="button" class="btn-chip" data-sample="exfil">Data Exfiltration</button>
+                  <button type="button" class="btn-chip" data-sample="cyber">Cybersecurity Discussion</button>
+                </div>
+              </div>
+
+              <!-- Controls: Detector and Policy -->
+              <div class="controls-row">
+                <div class="form-group flex-1">
+                  <label for="scanner-detector-mode" class="field-label">
+                    Detector Mode
+                    <span class="info-tooltip" title="Operating mode for inspection pipeline">ℹ️</span>
+                  </label>
+                  <select id="scanner-detector-mode" class="form-control">
+                    <option value="rules" selected>Rules — Deterministic Catalog (&lt; 1 ms)</option>
+                    <option value="llm">LLM — Local Ollama Qwen 2.5 (~3-4s)</option>
+                    <option value="hybrid">Hybrid — Rules + LLM Ensemble (Recommended)</option>
+                  </select>
+                  <div id="detector-hint" class="field-hint">Ultra-fast exact regex & phrase pattern matching. Sub-millisecond latency.</div>
+                </div>
+
+                <div class="form-group flex-1">
+                  <label for="scanner-policy-mode" class="field-label">
+                    Policy Sensitivity Tier
+                    <span class="info-tooltip" title="Determines decision thresholds (allow, review, block)">ℹ️</span>
+                  </label>
+                  <select id="scanner-policy-mode" class="form-control">
+                    <option value="permissive">Permissive — Blocks critical threats; allows low risk</option>
+                    <option value="balanced" selected>Balanced — Default. Blocks critical; reviews overrides</option>
+                    <option value="strict">Strict — Zero-tolerance. Blocks any override/medium threat</option>
+                  </select>
+                  <div id="policy-hint" class="field-hint">Recommended production baseline. High severity blocks; isolated override triggers review.</div>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button id="btn-run-scan" type="button" class="btn btn-primary btn-block">
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                  <span class="btn-label">Execute Security Scan</span>
+                  <span class="spinner hidden"></span>
+                </button>
+                <div class="shortcut-hint">Tip: Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to scan</div>
+              </div>
+            </form>
+          </div>
+
+          <!-- Right Column: Scan Results Output -->
+          <div class="card scanner-results-card">
+            <div class="card-header">
+              <h2 class="card-title">Inspection Results</h2>
+              <span id="scan-timestamp" class="timestamp-label">Awaiting inspection</span>
+            </div>
+
+            <!-- Idle / Empty State -->
+            <div id="scanner-empty-state" class="state-container">
+              <div class="state-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+              </div>
+              <div class="state-title">No Scan Executed Yet</div>
+              <div class="state-desc">Paste untrusted content or select a sample payload, configure the detector mode, and click "Execute Security Scan".</div>
+            </div>
+
+            <!-- Loading State -->
+            <div id="scanner-loading-state" class="state-container hidden">
+              <div class="spinner-large"></div>
+              <div class="state-title">Evaluating Content Security...</div>
+              <div id="scanner-loading-desc" class="state-desc">Running deterministic rules & local LLM semantic analysis.</div>
+            </div>
+
+            <!-- Error State -->
+            <div id="scanner-error-state" class="state-container hidden">
+              <div class="state-icon error-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="15" y1="9" x2="9" y2="15"></line>
+                  <line x1="9" y1="9" x2="15" y2="15"></line>
+                </svg>
+              </div>
+              <div id="scanner-error-title" class="state-title error-text">Scan Request Failed</div>
+              <div id="scanner-error-desc" class="state-desc">The request could not be processed.</div>
+              <div id="scanner-error-details" class="error-details-box hidden"></div>
+            </div>
+
+            <!-- Real Results Container -->
+            <div id="scanner-result-content" class="result-content hidden">
+              <!-- Decision Hero Banner -->
+              <div id="decision-banner" class="decision-banner decision-allow">
+                <div class="decision-icon-wrap">
+                  <svg id="decision-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"></svg>
+                </div>
+                <div class="decision-info">
+                  <div class="decision-pre">POLICY DECISION</div>
+                  <div id="decision-text" class="decision-heading">ALLOW</div>
+                  <div id="decision-sub" class="decision-sub">Content cleared for autonomous processing</div>
+                </div>
+                <div class="risk-gauge-wrap">
+                  <div class="risk-gauge-val" id="risk-score-value">0</div>
+                  <div class="risk-gauge-max">/ 100 RISK</div>
+                </div>
+              </div>
+
+              <!-- Metadata Metrics Strip -->
+              <div class="metrics-strip">
+                <div class="metric-pill">
+                  <span class="m-label">Latency:</span>
+                  <span id="metric-latency" class="m-val monospace">0.20 ms</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="m-label">Detector:</span>
+                  <span id="metric-detector" class="m-val monospace">hybrid</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="m-label">Status:</span>
+                  <span id="metric-status" class="m-val status-ok">ok</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="m-label">Scan ID:</span>
+                  <span id="metric-scan-id" class="m-val monospace" title="UUID">--------</span>
+                </div>
+              </div>
+
+              <!-- Policy Explanation -->
+              <div class="explanation-box">
+                <div class="box-label">Policy Evaluation Rationale</div>
+                <div id="explanation-text" class="explanation-body">Input content was inspected and evaluated without actionable findings.</div>
+              </div>
+
+              <!-- Degraded Alert if applicable -->
+              <div id="degraded-alert" class="alert-box alert-warning hidden">
+                <div class="alert-icon">⚠️</div>
+                <div class="alert-text">
+                  <strong>Degraded Pipeline Mode:</strong> Local LLM detector was unavailable. Security evaluation completed using rule engine findings only (Non-Cancellation Guarantee preserved).
+                </div>
+              </div>
+
+              <!-- Findings Section -->
+              <div class="findings-section">
+                <div class="findings-header">
+                  <h3 class="section-heading">Security Findings</h3>
+                  <span id="findings-count-badge" class="badge badge-neutral">0 Findings</span>
+                </div>
+
+                <!-- Clean Empty Findings -->
+                <div id="clean-findings-msg" class="clean-box">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                  <span>No malicious patterns or injection indicators were detected.</span>
+                </div>
+
+                <!-- Findings Table/List -->
+                <div id="findings-table-wrap" class="findings-table-wrap hidden">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Detector</th>
+                        <th>Category</th>
+                        <th>Severity</th>
+                        <th>Matched Indicator</th>
+                        <th>Evidence Context</th>
+                      </tr>
+                    </thead>
+                    <tbody id="findings-table-body">
+                      <!-- Rendered dynamically -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================
+           TAB 2: SECURITY DASHBOARD
+           ======================================================== -->
+      <section id="view-dashboard" class="tab-view" role="tabpanel" aria-labelledby="tab-btn-dashboard">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Operational Security Dashboard</h1>
+            <p class="view-subtitle">Live in-process telemetry and service health metrics recorded by the active PromptFence instance.</p>
+          </div>
+          <div class="view-actions">
+            <label class="auto-refresh-toggle">
+              <input type="checkbox" id="toggle-telemetry-auto" checked>
+              <span class="toggle-slider"></span>
+              <span class="toggle-text">Auto-refresh (5s)</span>
+            </label>
+            <button id="btn-refresh-telemetry" class="btn btn-secondary btn-sm" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              <span>Refresh Now</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Telemetry Notice -->
+        <div class="banner-notice">
+          <div class="notice-icon">ℹ️</div>
+          <div class="notice-body">
+            <strong>In-Process Memory Counters:</strong> Operational telemetry metrics are tracked in-process by the active FastAPI server instance. Counters reset when the backend process restarts. Metrics reflect genuine completed scans executed during this runtime session.
+          </div>
+        </div>
+
+        <!-- Key Operational Metric Cards -->
+        <div class="dashboard-metrics-grid">
+          <div class="metric-card">
+            <div class="m-card-header">
+              <span class="m-card-title">Total Scans Executed</span>
+              <div class="m-card-icon icon-blue">📊</div>
+            </div>
+            <div id="stat-total-scans" class="m-card-value">0</div>
+            <div class="m-card-footer">All detector modes combined</div>
+          </div>
+
+          <div class="metric-card border-green">
+            <div class="m-card-header">
+              <span class="m-card-title">Allowed Clean</span>
+              <div class="m-card-icon icon-green">✅</div>
+            </div>
+            <div id="stat-allowed" class="m-card-value text-green">0</div>
+            <div id="stat-allowed-pct" class="m-card-footer">0.0% of total traffic</div>
+          </div>
+
+          <div class="metric-card border-amber">
+            <div class="m-card-header">
+              <span class="m-card-title">Under Review</span>
+              <div class="m-card-icon icon-amber">⚠️</div>
+            </div>
+            <div id="stat-reviewed" class="m-card-value text-amber">0</div>
+            <div id="stat-reviewed-pct" class="m-card-footer">0.0% of total traffic</div>
+          </div>
+
+          <div class="metric-card border-red">
+            <div class="m-card-header">
+              <span class="m-card-title">Blocked Threats</span>
+              <div class="m-card-icon icon-red">🛑</div>
+            </div>
+            <div id="stat-blocked" class="m-card-value text-red">0</div>
+            <div id="stat-blocked-pct" class="m-card-footer">0.0% of total traffic</div>
+          </div>
+        </div>
+
+        <!-- Latency and Findings Secondary Row -->
+        <div class="dashboard-secondary-grid">
+          <div class="metric-card">
+            <div class="m-card-header">
+              <span class="m-card-title">Total Findings Identified</span>
+              <div class="m-card-icon icon-purple">🎯</div>
+            </div>
+            <div id="stat-findings" class="m-card-value text-purple">0</div>
+            <div class="m-card-footer">Detected injection indicators</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="m-card-header">
+              <span class="m-card-title">Average Pipeline Latency</span>
+              <div class="m-card-icon icon-cyan">⚡</div>
+            </div>
+            <div id="stat-avg-latency" class="m-card-value monospace">0.00 ms</div>
+            <div class="m-card-footer">Mean end-to-end execution</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="m-card-header">
+              <span class="m-card-title">Most Recent Latency</span>
+              <div class="m-card-icon icon-cyan">⏱️</div>
+            </div>
+            <div id="stat-last-latency" class="m-card-value monospace">0.00 ms</div>
+            <div class="m-card-footer">Last completed scan</div>
+          </div>
+        </div>
+
+        <!-- Decision Distribution Proportion Bar -->
+        <div class="card mt-4">
+          <div class="card-header">
+            <h2 class="card-title">Live Decision Breakdown</h2>
+            <span class="timestamp-label">Proportional Traffic Share</span>
+          </div>
+          <div class="proportion-bar-wrap">
+            <div id="dist-bar-allow" class="bar-seg seg-allow" style="width: 33.3%;" title="Allow"></div>
+            <div id="dist-bar-review" class="bar-seg seg-review" style="width: 33.3%;" title="Review"></div>
+            <div id="dist-bar-block" class="bar-seg seg-block" style="width: 33.4%;" title="Block"></div>
+          </div>
+          <div class="bar-legend">
+            <div class="legend-item"><span class="legend-dot dot-allow"></span> Allow: <strong id="legend-allow-val">0 (0%)</strong></div>
+            <div class="legend-item"><span class="legend-dot dot-review"></span> Review: <strong id="legend-review-val">0 (0%)</strong></div>
+            <div class="legend-item"><span class="legend-dot dot-block"></span> Block: <strong id="legend-block-val">0 (0%)</strong></div>
+          </div>
+        </div>
+
+        <!-- System Architecture & Health Details -->
+        <div class="dashboard-details-grid mt-4">
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Service Health & Environment</h2>
+              <span id="health-check-status" class="badge badge-success">OK</span>
+            </div>
+            <div class="key-value-list">
+              <div class="kv-item">
+                <span class="kv-key">Backend Service:</span>
+                <span id="health-svc-name" class="kv-val">PromptFence</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-key">API Version:</span>
+                <span id="health-svc-version" class="kv-val monospace">0.2.0</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-key">Health Status Endpoint:</span>
+                <span class="kv-val monospace">/health (HTTP 200 OK)</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-key">In-Process Telemetry:</span>
+                <span class="kv-val monospace">/telemetry (Active)</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-key">Local Ollama Model:</span>
+                <span class="kv-val monospace">qwen2.5:1.5b</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-key">Distributed Worker Sync:</span>
+                <span class="kv-val text-muted">Not enabled (Single process memory)</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Active Security Guarantees</h2>
+              <span class="badge badge-info">Enforced</span>
+            </div>
+            <div class="guarantee-list">
+              <div class="guarantee-item">
+                <div class="g-icon">🛡️</div>
+                <div class="g-body">
+                  <strong>Non-Cancellation Guarantee:</strong>
+                  <span>A benign or low-risk model finding can NEVER cancel a high-severity rule detection. Security safeguards remain intact regardless of LLM confidence.</span>
+                </div>
+              </div>
+              <div class="guarantee-item">
+                <div class="g-icon">🔄</div>
+                <div class="g-body">
+                  <strong>Graceful Pipeline Degradation:</strong>
+                  <span>If local Ollama inference fails or times out in Hybrid mode, the deterministic rule findings are preserved and policy evaluation completes under degraded status.</span>
+                </div>
+              </div>
+              <div class="guarantee-item">
+                <div class="g-icon">🔒</div>
+                <div class="g-body">
+                  <strong>Pre-Execution Tool Guardrails:</strong>
+                  <span>Tool action policies are evaluated and enforced in Python backend code before any mock tool logic executes.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================
+           TAB 3: AGENT SIMULATION
+           ======================================================== -->
+      <section id="view-simulation" class="tab-view" role="tabpanel" aria-labelledby="tab-btn-simulation">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Deterministic Agent Simulation Sandbox</h1>
+            <p class="view-subtitle">Demonstrate policy enforcement intercepting agent actions before mock tools can execute.</p>
+          </div>
+        </div>
+
+        <!-- Strict Sandbox Notice -->
+        <div class="sandbox-banner">
+          <div class="sb-icon">🛡️</div>
+          <div class="sb-body">
+            <strong>Mock-Agent Execution Sandbox:</strong>
+            <span>All tool operations below execute against deterministic, mock Python stubs with strict parameter ceilings. No real financial transfers, customer refunds, candidate hiring, external network requests, or filesystem modifications are ever performed.</span>
+          </div>
+        </div>
+
+        <div class="simulation-grid">
+          <!-- Setup Form -->
+          <div class="card sim-form-card">
+            <div class="card-header">
+              <h2 class="card-title">Agent Request Configuration</h2>
+            </div>
+            <form id="sim-form" onsubmit="return false;">
+              <!-- Preset Scenario Selector -->
+              <div class="form-group">
+                <label for="sim-preset" class="field-label">Scenario Presets</label>
+                <select id="sim-preset" class="form-control">
+                  <option value="" selected>-- Select a simulation scenario --</option>
+                  <option value="inv_safe">Safe Invoice Approval ($450.00)</option>
+                  <option value="inv_attack">Malicious Invoice (Prompt Injection & Override)</option>
+                  <option value="inv_ceiling">Invoice Exceeding $5,000 Safety Ceiling</option>
+                  <option value="hire_safe">Qualified Candidate Offer (Score 92)</option>
+                  <option value="hire_attack">Resume with Injection to Force Score 100</option>
+                  <option value="hire_low">Unqualified Candidate (Score 55 - Below 70 Threshold)</option>
+                  <option value="refund_safe">Standard Customer Refund ($45.00)</option>
+                  <option value="refund_attack">Refund Request with Data Exfiltration</option>
+                  <option value="refund_ceiling">Refund Exceeding $250.00 Ceiling ($9,999.00)</option>
+                  <option value="unauth_tool">Unauthorized Tool (format_c_drive)</option>
+                </select>
+              </div>
+
+              <!-- Untrusted Content Input -->
+              <div class="form-group">
+                <label for="sim-input-text" class="field-label">Untrusted Agent Input Content</label>
+                <textarea
+                  id="sim-input-text"
+                  class="form-control text-area monospace"
+                  rows="4"
+                  placeholder="Document, email, ticket, or resume text the agent was directed to process..."
+                  required
+                ></textarea>
+              </div>
+
+              <!-- Proposed Tool Selection -->
+              <div class="form-group">
+                <label for="sim-tool-select" class="field-label">Proposed Agent Tool</label>
+                <select id="sim-tool-select" class="form-control">
+                  <option value="approve_invoice">approve_invoice (Vendor invoice approval, max $5,000.00)</option>
+                  <option value="hire_candidate">hire_candidate (Job offer, min score 70/100)</option>
+                  <option value="issue_refund">issue_refund (Customer refund, max $250.00)</option>
+                  <option value="custom_tool">custom_tool (Test unauthorized tool or invalid args)</option>
+                </select>
+              </div>
+
+              <!-- Dynamic Tool Arguments Form -->
+              <div id="sim-args-wrapper" class="args-wrapper">
+                <!-- Injected via JS based on tool -->
+              </div>
+
+              <!-- Pipeline Options -->
+              <div class="controls-row">
+                <div class="form-group flex-1">
+                  <label for="sim-detector-mode" class="field-label">Detector Mode</label>
+                  <select id="sim-detector-mode" class="form-control">
+                    <option value="rules" selected>Rules (Fast)</option>
+                    <option value="llm">LLM (Ollama)</option>
+                    <option value="hybrid">Hybrid (Ensemble)</option>
+                  </select>
+                </div>
+                <div class="form-group flex-1">
+                  <label for="sim-policy-mode" class="field-label">Policy Tier</label>
+                  <select id="sim-policy-mode" class="form-control">
+                    <option value="permissive">Permissive</option>
+                    <option value="balanced" selected>Balanced</option>
+                    <option value="strict">Strict</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button id="btn-run-simulation" type="button" class="btn btn-primary btn-block">
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                  </svg>
+                  <span class="btn-label">Simulate Agent Action</span>
+                  <span class="spinner hidden"></span>
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Outcome Card -->
+          <div class="card sim-results-card">
+            <div class="card-header">
+              <h2 class="card-title">Policy Enforcement & Execution Outcome</h2>
+              <span id="sim-timestamp" class="timestamp-label">Awaiting simulation</span>
+            </div>
+
+            <!-- Simulation Empty State -->
+            <div id="sim-empty-state" class="state-container">
+              <div class="state-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+                  <circle cx="12" cy="5" r="2"></circle>
+                  <path d="M12 7v4"></path>
+                </svg>
+              </div>
+              <div class="state-title">Ready to Simulate</div>
+              <div class="state-desc">Select a scenario preset or enter untrusted text and mock tool arguments, then click "Simulate Agent Action".</div>
+            </div>
+
+            <!-- Simulation Loading State -->
+            <div id="sim-loading-state" class="state-container hidden">
+              <div class="spinner-large"></div>
+              <div class="state-title">Simulating Guarded Action...</div>
+              <div class="state-desc">Scanning input content and enforcing backend tool safety policies.</div>
+            </div>
+
+            <!-- Simulation Result Content -->
+            <div id="sim-result-content" class="sim-result-content hidden">
+              <!-- Tool Status Banner -->
+              <div id="sim-status-banner" class="sim-status-banner status-executed">
+                <div class="status-icon-wrap">
+                  <svg id="sim-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"></svg>
+                </div>
+                <div class="status-info">
+                  <div class="status-pre">TOOL OUTCOME</div>
+                  <div id="sim-status-title" class="status-heading">EXECUTED</div>
+                  <div id="sim-status-desc" class="status-sub">Tool was executed safely</div>
+                </div>
+                <div class="executed-flag-wrap">
+                  <div id="sim-flag-label" class="flag-label">EXECUTED</div>
+                  <div id="sim-flag-val" class="flag-val flag-yes">TRUE</div>
+                </div>
+              </div>
+
+              <!-- Decision & Risk Strip -->
+              <div class="metrics-strip">
+                <div class="metric-pill">
+                  <span class="m-label">Policy Decision:</span>
+                  <span id="sim-metric-decision" class="m-val text-green font-bold">ALLOW</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="m-label">Risk Score:</span>
+                  <span id="sim-metric-risk" class="m-val monospace">0 / 100</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="m-label">Latency:</span>
+                  <span id="sim-metric-latency" class="m-val monospace">0.00 ms</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="m-label">Status Code:</span>
+                  <span id="sim-metric-code" class="m-val monospace">executed</span>
+                </div>
+              </div>
+
+              <!-- Explanation -->
+              <div class="explanation-box">
+                <div class="box-label">Policy Evaluation Explanation</div>
+                <div id="sim-explanation-text" class="explanation-body">---</div>
+              </div>
+
+              <!-- Tool Execution Result JSON -->
+              <div class="json-output-section">
+                <div class="box-label">Mock Tool Output / Execution Record</div>
+                <pre id="sim-json-output" class="json-code-box">{}</pre>
+              </div>
+
+              <!-- Findings Detected if any -->
+              <div id="sim-findings-section" class="findings-section mt-4 hidden">
+                <div class="findings-header">
+                  <h3 class="section-heading">Injection Findings Intercepted</h3>
+                  <span id="sim-findings-count" class="badge badge-warning">0 Findings</span>
+                </div>
+                <div id="sim-findings-list" class="sim-findings-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================
+           TAB 4: ATTACK PLAYGROUND
+           ======================================================== -->
+      <section id="view-playground" class="tab-view" role="tabpanel" aria-labelledby="tab-btn-playground">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Synthetic Attack &amp; Benign Playground</h1>
+            <p class="view-subtitle">Explore a curated showcase of synthetic benign and prompt injection payloads. Selecting an example populates the scanner input for review.</p>
+          </div>
+        </div>
+
+        <!-- Playground Notice -->
+        <div class="banner-notice">
+          <div class="notice-icon">⚠️</div>
+          <div class="notice-body">
+            <strong>Demonstration Showcase Notice:</strong>
+            These curated test cases illustrate specific prompt injection vectors and benign boundary conditions. <strong>Loading an example will populate the scanner input field; it will NEVER silently execute an automatic scan.</strong> This showcase is intended for developer exploration and is not a comprehensive security test suite.
+          </div>
+        </div>
+
+        <!-- Category Filter Pills -->
+        <div class="filter-bar">
+          <span class="filter-label">Filter Category:</span>
+          <button class="filter-btn active" data-filter="all">All (12)</button>
+          <button class="filter-btn" data-filter="benign">Benign (4)</button>
+          <button class="filter-btn" data-filter="instruction_override">Instruction Override (3)</button>
+          <button class="filter-btn" data-filter="secret_extraction">Secret Extraction (2)</button>
+          <button class="filter-btn" data-filter="data_exfiltration">Data Exfiltration (2)</button>
+          <button class="filter-btn" data-filter="unauthorized_tool_use">Unauthorized Tool Use (1)</button>
+        </div>
+
+        <!-- Playground Cards Grid -->
+        <div id="playground-cards-grid" class="playground-grid">
+          <!-- Populated dynamically via JS -->
+        </div>
+      </section>
+
+      <!-- ========================================================
+           TAB 5: EVALUATION
+           ======================================================== -->
+      <section id="view-evaluation" class="tab-view" role="tabpanel" aria-labelledby="tab-btn-evaluation">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Quantitative Security Benchmark Evaluation</h1>
+            <p class="view-subtitle">Verified comparative performance metrics measured against the 100-case synthetic benchmark suite.</p>
+          </div>
+          <div class="view-actions">
+            <span class="badge badge-info monospace">Run: run_20261025_100509</span>
+          </div>
+        </div>
+
+        <!-- Synthetic Benchmark Limitation Notice -->
+        <div class="banner-notice border-blue">
+          <div class="notice-icon">📋</div>
+          <div class="notice-body">
+            <strong>Notice: Synthetic Benchmark Limitation:</strong>
+            The evaluation dataset is a curated synthetic benchmark (100 cases: 50 benign, 50 malicious) designed for reproducible, standardized security testing. It is <strong>not</strong> a statistically representative sample of live production traffic. Real-world injection attempts may exhibit novel phrasing, multi-turn context dependencies, or obfuscation techniques beyond synthetic suites. Auxiliary models provide defense-in-depth and do not replace backend tool allowlists, argument validation ceilings, or deterministic policy constraints.
+          </div>
+        </div>
+
+        <!-- Benchmark Metadata Overview Cards -->
+        <div class="eval-meta-grid">
+          <div class="meta-card">
+            <div class="m-card-title">Benchmark Run ID</div>
+            <div id="eval-run-id" class="m-card-value-sm monospace">run_20261025_100509</div>
+            <div class="m-card-footer">Completed baseline execution</div>
+          </div>
+          <div class="meta-card">
+            <div class="m-card-title">Dataset Size & Split</div>
+            <div class="m-card-value-sm">100 Cases</div>
+            <div class="m-card-footer">50 Benign / 50 Malicious</div>
+          </div>
+          <div class="meta-card">
+            <div class="m-card-title">Configured Local Model</div>
+            <div class="m-card-value-sm monospace">qwen2.5:1.5b</div>
+            <div class="m-card-footer">Ollama local CPU inference</div>
+          </div>
+          <div class="meta-card">
+            <div class="m-card-title">Policy Profile</div>
+            <div class="m-card-value-sm">balanced</div>
+            <div class="m-card-footer">Default sensitivity tier</div>
+          </div>
+        </div>
+
+        <!-- Comparative Performance Table -->
+        <div class="card mt-4">
+          <div class="card-header">
+            <h2 class="card-title">Verified Comparative Performance (100 Cases)</h2>
+            <span class="timestamp-label">Artifact: evaluation/results/run_20261025_100509/metrics.json</span>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table comparative-table">
+              <thead>
+                <tr>
+                  <th>Operating Mode</th>
+                  <th>Coverage</th>
+                  <th>Accuracy</th>
+                  <th>Precision</th>
+                  <th>Recall</th>
+                  <th>F1 Score</th>
+                  <th>False-Positive Rate</th>
+                  <th>False-Negative Rate</th>
+                  <th>Mean Latency</th>
+                  <th>Errors</th>
+                </tr>
+              </thead>
+              <tbody id="eval-metrics-tbody">
+                <tr>
+                  <td><strong>rules</strong></td>
+                  <td>100.0%</td>
+                  <td>93.00%</td>
+                  <td>97.78%</td>
+                  <td>88.00%</td>
+                  <td>92.63%</td>
+                  <td class="text-green">2.00% (1/50)</td>
+                  <td class="text-amber">12.00% (6/50)</td>
+                  <td class="monospace">0.20 ms</td>
+                  <td>0</td>
+                </tr>
+                <tr>
+                  <td><strong>llm</strong></td>
+                  <td>100.0%</td>
+                  <td>97.00%</td>
+                  <td>96.08%</td>
+                  <td>98.00%</td>
+                  <td>97.03%</td>
+                  <td class="text-green">4.00% (2/50)</td>
+                  <td class="text-green">2.00% (1/50)</td>
+                  <td class="monospace">3821.04 ms</td>
+                  <td>0</td>
+                </tr>
+                <tr>
+                  <td><strong>hybrid</strong></td>
+                  <td>100.0%</td>
+                  <td>96.00%</td>
+                  <td>94.23%</td>
+                  <td>98.00%</td>
+                  <td>96.08%</td>
+                  <td class="text-amber">6.00% (3/50)</td>
+                  <td class="text-green">2.00% (1/50)</td>
+                  <td class="monospace">3816.57 ms</td>
+                  <td>0</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Visual Comparison Progress Bars -->
+        <div class="card mt-4">
+          <div class="card-header">
+            <h2 class="card-title">Visual Metric Comparison</h2>
+            <span class="timestamp-label">Sensitivity vs False Alarms vs Speed</span>
+          </div>
+          <div class="comparison-visuals-grid">
+            <!-- Recall Comparison -->
+            <div class="vis-column">
+              <h3 class="vis-heading">Recall (Attack Detection Rate) — Higher is better</h3>
+              <div class="bar-group">
+                <div class="bar-row">
+                  <span class="bar-label">rules</span>
+                  <div class="progress-track"><div class="progress-fill fill-blue" style="width: 88%;">88.0%</div></div>
+                </div>
+                <div class="bar-row">
+                  <span class="bar-label">llm</span>
+                  <div class="progress-track"><div class="progress-fill fill-green" style="width: 98%;">98.0%</div></div>
+                </div>
+                <div class="bar-row">
+                  <span class="bar-label">hybrid</span>
+                  <div class="progress-track"><div class="progress-fill fill-green" style="width: 98%;">98.0%</div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- False Positive Rate -->
+            <div class="vis-column">
+              <h3 class="vis-heading">False-Positive Rate — Lower is better</h3>
+              <div class="bar-group">
+                <div class="bar-row">
+                  <span class="bar-label">rules</span>
+                  <div class="progress-track"><div class="progress-fill fill-green" style="width: 2%;">2.0%</div></div>
+                </div>
+                <div class="bar-row">
+                  <span class="bar-label">llm</span>
+                  <div class="progress-track"><div class="progress-fill fill-green" style="width: 4%;">4.0%</div></div>
+                </div>
+                <div class="bar-row">
+                  <span class="bar-label">hybrid</span>
+                  <div class="progress-track"><div class="progress-fill fill-amber" style="width: 6%;">6.0%</div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Latency Comparison -->
+            <div class="vis-column">
+              <h3 class="vis-heading">Latency (logarithmic scale) — Lower is faster</h3>
+              <div class="bar-group">
+                <div class="bar-row">
+                  <span class="bar-label">rules</span>
+                  <div class="progress-track"><div class="progress-fill fill-cyan" style="width: 2%;">0.2 ms</div></div>
+                </div>
+                <div class="bar-row">
+                  <span class="bar-label">llm</span>
+                  <div class="progress-track"><div class="progress-fill fill-purple" style="width: 100%;">3,821 ms</div></div>
+                </div>
+                <div class="bar-row">
+                  <span class="bar-label">hybrid</span>
+                  <div class="progress-track"><div class="progress-fill fill-purple" style="width: 100%;">3,817 ms</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Architectural Trade-off Analysis -->
+        <div class="card mt-4">
+          <div class="card-header">
+            <h2 class="card-title">Architectural Analysis &amp; Security Trade-Offs</h2>
+          </div>
+          <div class="analysis-body">
+            <div class="analysis-section">
+              <h3 class="analysis-title">1. Why does Hybrid mode have 98.00% recall but 6.00% false-positive rate?</h3>
+              <p>
+                In hybrid mode, PromptFence functions as a <strong>defense-in-depth disjunctive (OR) ensemble</strong>. It enforces the strict <em>Non-Cancellation Guarantee</em>: rules findings cannot be cancelled by a benign model response, and semantic detections from the LLM are preserved to catch adversarial evasion.
+              </p>
+              <p>
+                Detailed error analysis revealed that the false-positive sets of the rule detector and local LLM detector are <strong>completely disjoint</strong>:
+              </p>
+              <div class="formula-box monospace">
+                FP(Rules) ∩ FP(LLM) = {benign_045} ∩ {benign_036, benign_048} = ∅<br>
+                FP(Hybrid) = FP(Rules) ∪ FP(LLM) = {benign_036, benign_045, benign_048} = 3 cases (6.00%)
+              </div>
+              <p>
+                Because neither detector's findings can suppress the other's detections, Hybrid inherits all false alarms from both detectors.
+              </p>
+            </div>
+
+            <div class="analysis-section">
+              <h3 class="analysis-title">2. Why Consensus Filtering was rejected</h3>
+              <p>
+                An alternative policy design would require both detectors to agree (an AND-gate consensus) before escalating to a threat decision. However, our verification showed that requiring consensus would cause Hybrid recall to collapse from <strong>98.00% down to 88.00%</strong>, missing all 5 adversarial bypasses that the LLM successfully caught:
+              </p>
+              <ul>
+                <li><code>secret_009</code>: Structured JSON compliance audit pretext</li>
+                <li><code>secret_010</code>: Backwards character elicitation</li>
+                <li><code>secret_011</code>: Python dictionary code generation pretext</li>
+                <li><code>secret_012</code>: Base64 payload encoding attempt</li>
+                <li><code>exfil_009</code>: Multi-hop steganographic parameter exfiltration</li>
+              </ul>
+              <p>
+                In high-assurance security systems, accepting a 6.00% false-positive rate (which routes ambiguous cases to manual human review) is substantially safer than permitting a 12.00% false-negative rate that silently lets adversarial prompt injections execute.
+              </p>
+            </div>
+
+            <div class="analysis-section">
+              <h3 class="analysis-title">3. Latency & Gateway Deployment Recommendations</h3>
+              <p>
+                <strong>Rules mode (0.20 ms)</strong> is ideally suited as an inline ingress gateway filter, catching 88.00% of standard attacks at sub-millisecond wire speed. <strong>Hybrid mode (~3.8s)</strong> provides deep semantic inspection for high-value actions (financial approvals, refunds, privileged tool invocations) where defense-in-depth outweighs millisecond latency.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Global App Footer -->
+    <footer class="app-footer">
+      <div class="footer-inner">
+        <div>PromptFence • Open-Source AI Security Harness &amp; Injection Guardrails</div>
+        <div class="footer-links">
+          <a href="/docs" target="_blank" rel="noopener">API Documentation</a>
+          <span class="sep">•</span>
+          <a href="/health" target="_blank" rel="noopener">Health Endpoint</a>
+          <span class="sep">•</span>
+          <a href="/telemetry" target="_blank" rel="noopener">Live Telemetry</a>
+          <span class="sep">•</span>
+          <a href="/api/benchmark" target="_blank" rel="noopener">Benchmark JSON</a>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

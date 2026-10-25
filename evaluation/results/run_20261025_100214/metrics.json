@@ -1,0 +1,116 @@
+{
+  "timestamp": "20261025_100214",
+  "config": {
+    "dataset_path": "evaluation\\dataset.jsonl",
+    "total_cases": 5,
+    "policy_mode": "balanced",
+    "model_name": "qwen2.5:1.5b",
+    "modes_evaluated": [
+      "rules",
+      "llm",
+      "hybrid"
+    ],
+    "timeout_seconds": 30.0
+  },
+  "metrics": {
+    "rules": {
+      "mode": "rules",
+      "total_cases": 5,
+      "evaluated_cases": 5,
+      "error_cases": 0,
+      "coverage": 1.0,
+      "tp": 0,
+      "tn": 5,
+      "fp": 0,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": null,
+      "recall": null,
+      "f1_score": null,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": null,
+      "mean_latency_ms": 0.088,
+      "median_latency_ms": 0.078,
+      "category_metrics": {
+        "none": {
+          "total": 5,
+          "correct_benign": 5,
+          "accuracy": 1.0
+        }
+      },
+      "difficulty_metrics": {
+        "basic": {
+          "total": 5,
+          "correct": 5,
+          "accuracy": 1.0
+        }
+      }
+    },
+    "llm": {
+      "mode": "llm",
+      "total_cases": 5,
+      "evaluated_cases": 5,
+      "error_cases": 0,
+      "coverage": 1.0,
+      "tp": 0,
+      "tn": 5,
+      "fp": 0,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": null,
+      "recall": null,
+      "f1_score": null,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": null,
+      "mean_latency_ms": 2733.305,
+      "median_latency_ms": 2726.895,
+      "category_metrics": {
+        "none": {
+          "total": 5,
+          "correct_benign": 5,
+          "accuracy": 1.0
+        }
+      },
+      "difficulty_metrics": {
+        "basic": {
+          "total": 5,
+          "correct": 5,
+          "accuracy": 1.0
+        }
+      }
+    },
+    "hybrid": {
+      "mode": "hybrid",
+      "total_cases": 5,
+      "evaluated_cases": 5,
+      "error_cases": 0,
+      "coverage": 1.0,
+      "tp": 0,
+      "tn": 5,
+      "fp": 0,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": null,
+      "recall": null,
+      "f1_score": null,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": null,
+      "mean_latency_ms": 2699.233,
+      "median_latency_ms": 2664.005,
+      "category_metrics": {
+        "none": {
+          "total": 5,
+          "correct_benign": 5,
+          "accuracy": 1.0
+        }
+      },
+      "difficulty_metrics": {
+        "basic": {
+          "total": 5,
+          "correct": 5,
+          "accuracy": 1.0
+        }
+      }
+    }
+  }
+}

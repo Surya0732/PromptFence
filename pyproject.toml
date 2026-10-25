@@ -1,9 +1,0 @@
-[project]
-name = "promptfence"
-version = "0.1.0"
-description = "A reusable security harness for AI agents that detects prompt injection."
-requires-python = ">=3.10"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]

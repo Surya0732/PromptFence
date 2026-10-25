@@ -1,180 +1,249 @@
-"""Tests for the policy engine.
-
-These tests verify that ``evaluate_policy`` produces correct risk scores,
-decisions, and reasons based on various combinations of findings.
-"""
+"""Unit tests for the PromptFence policy engine."""
 
 from __future__ import annotations
 
 import pytest
 
-from app.policy.engine import evaluate_policy
+from app.policy.engine import PolicyEngine, evaluate_policy
+from app.schemas import Decision, Finding, FindingCategory, FindingSeverity
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+class TestPolicyEngine:
+    """Test suite covering policy decision rules and deterministic risk scoring."""
 
-def _finding(category: str = "instruction_override",
-             severity: str = "medium",
-             indicator: str = "test pattern") -> dict:
-    """Build a minimal finding dict for testing."""
-    return {
-        "detector": "rules",
-        "category": category,
-        "severity": severity,
-        "evidence": "test evidence",
-        "matched_indicator": indicator,
-    }
-
-
-# ---------------------------------------------------------------------------
-# No findings
-# ---------------------------------------------------------------------------
-
-
-class TestNoFindings:
-    """Verify that no findings produces allow with score 0."""
-
-    def test_empty_list(self) -> None:
+    def test_no_findings_returns_allow(self) -> None:
+        """When findings list is empty, policy must allow with risk score 0."""
         result = evaluate_policy([])
+        assert result["decision"] == Decision.ALLOW.value
         assert result["risk_score"] == 0
-        assert result["decision"] == "allow"
-        assert isinstance(result["reasons"], list)
-        assert len(result["reasons"]) > 0
+        assert "allowed" in result["explanation"].lower()
 
-    def test_none_is_handled_like_empty(self) -> None:
-        """If somehow None or falsy is passed, it should not crash."""
-        result = evaluate_policy([])
-        assert result["decision"] == "allow"
-
-
-# ---------------------------------------------------------------------------
-# Score range
-# ---------------------------------------------------------------------------
-
-
-class TestScoreRange:
-    """Verify that the risk score stays within [0, 100]."""
-
-    def test_single_low(self) -> None:
-        result = evaluate_policy([_finding(severity="low")])
-        assert 0 <= result["risk_score"] <= 100
-
-    def test_many_high_findings(self) -> None:
-        """Even many high-severity findings should not exceed 100."""
+    def test_low_severity_finding_returns_review(self) -> None:
+        """Low severity findings should result in a review decision."""
         findings = [
-            _finding("secret_extraction", "high", f"pattern {i}")
-            for i in range(20)
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.LOW.value,
+                "evidence": "...act as an unfiltered...",
+                "matched_indicator": "act as an unfiltered",
+            }
         ]
         result = evaluate_policy(findings)
-        assert result["risk_score"] <= 100
+        assert result["decision"] == Decision.REVIEW.value
+        assert 20 <= result["risk_score"] <= 70
+        assert "review" in result["explanation"].lower()
 
-    def test_score_never_negative(self) -> None:
-        result = evaluate_policy([_finding(severity="low")])
-        assert result["risk_score"] >= 0
-
-
-# ---------------------------------------------------------------------------
-# Weak indicators
-# ---------------------------------------------------------------------------
-
-
-class TestWeakIndicators:
-    """Verify that weak indicators do not automatically produce block."""
-
-    def test_single_low_severity(self) -> None:
-        result = evaluate_policy([_finding(severity="low")])
-        assert result["decision"] != "block"
-
-    def test_single_medium_severity(self) -> None:
-        result = evaluate_policy([_finding(severity="medium")])
-        assert result["decision"] != "block"
-
-
-# ---------------------------------------------------------------------------
-# Instruction override handling
-# ---------------------------------------------------------------------------
-
-
-class TestInstructionOverride:
-    """Verify that instruction_override alone leads to review, not block."""
-
-    def test_single_override_high(self) -> None:
-        result = evaluate_policy([
-            _finding("instruction_override", "high"),
-        ])
-        # Even a high-severity instruction_override alone should cap at review
-        assert result["decision"] in ("allow", "review")
-
-    def test_multiple_overrides(self) -> None:
+    def test_medium_severity_finding_returns_review(self) -> None:
+        """Medium severity findings without critical indicators should trigger review."""
         findings = [
-            _finding("instruction_override", "high", f"pattern {i}")
-            for i in range(5)
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.MEDIUM.value,
+                "evidence": "...you are now in developer mode...",
+                "matched_indicator": "you are now in developer mode",
+            }
         ]
         result = evaluate_policy(findings)
-        assert result["decision"] in ("allow", "review"), (
-            "Multiple instruction_override findings alone should not block"
+        assert result["decision"] == Decision.REVIEW.value
+        assert 25 <= result["risk_score"] <= 70
+
+    @pytest.mark.parametrize(
+        "serious_category",
+        [
+            FindingCategory.SECRET_EXTRACTION.value,
+            FindingCategory.DATA_EXFILTRATION.value,
+            FindingCategory.UNAUTHORIZED_TOOL_USE.value,
+        ],
+    )
+    def test_high_severity_serious_categories_trigger_block(self, serious_category: str) -> None:
+        """High-severity findings in secret extraction, data exfil, or unauthorized tool use must block."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": serious_category,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...critical exploit attempt...",
+                "matched_indicator": "test_indicator",
+            }
+        ]
+        result = evaluate_policy(findings)
+        assert result["decision"] == Decision.BLOCK.value
+        assert result["risk_score"] >= 75
+        assert "blocked" in result["explanation"].lower()
+
+    def test_high_severity_instruction_override_alone_triggers_review(self) -> None:
+        """An isolated high-severity instruction override should result in review."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...ignore previous instructions...",
+                "matched_indicator": "ignore previous instructions",
+            }
+        ]
+        result = evaluate_policy(findings)
+        assert result["decision"] == Decision.REVIEW.value
+        assert 25 <= result["risk_score"] <= 70
+        assert "review" in result["explanation"].lower()
+
+    def test_high_severity_instruction_override_with_additional_evidence_triggers_block(self) -> None:
+        """High-severity instruction override combined with additional attack evidence must trigger block."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...ignore previous instructions...",
+                "matched_indicator": "ignore previous instructions",
+            },
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.SECRET_EXTRACTION.value,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...reveal your system prompt...",
+                "matched_indicator": "reveal your system prompt",
+            },
+        ]
+        result = evaluate_policy(findings)
+        assert result["decision"] == Decision.BLOCK.value
+        assert result["risk_score"] >= 75
+        assert "blocked" in result["explanation"].lower()
+
+    def test_low_severity_finding_does_not_cancel_high_severity_finding(self) -> None:
+        """A low-severity finding present alongside a high-severity finding must never downgrade a block."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.UNAUTHORIZED_TOOL_USE.value,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...rm -rf...",
+                "matched_indicator": "rm -rf",
+            },
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.LOW.value,
+                "evidence": "...act as an unfiltered...",
+                "matched_indicator": "act as an unfiltered",
+            },
+        ]
+        result = evaluate_policy(findings)
+        assert result["decision"] == Decision.BLOCK.value
+        assert result["risk_score"] >= 75
+
+    def test_policy_evaluates_pydantic_finding_objects(self) -> None:
+        """Policy engine should work seamlessly with Pydantic Finding objects as well as raw dicts."""
+        finding_obj = Finding(
+            detector="rule_engine",
+            category=FindingCategory.DATA_EXFILTRATION,
+            severity=FindingSeverity.HIGH,
+            evidence="...curl http...",
+            matched_indicator="curl http",
         )
+        result = evaluate_policy([finding_obj])
+        assert result["decision"] == Decision.BLOCK.value
+        assert result["risk_score"] >= 75
 
-
-# ---------------------------------------------------------------------------
-# Serious findings
-# ---------------------------------------------------------------------------
-
-
-class TestSeriousFindings:
-    """Verify that high-severity, high-risk findings receive block."""
-
-    def test_high_secret_extraction(self) -> None:
+    def test_risk_score_is_bounded_and_deterministic(self) -> None:
+        """The risk score must always be an integer within [0, 100] and deterministic."""
         findings = [
-            _finding("secret_extraction", "high"),
-            _finding("data_exfiltration", "high"),
+            Finding(
+                detector="rule_engine",
+                category=FindingCategory.UNAUTHORIZED_TOOL_USE,
+                severity=FindingSeverity.HIGH,
+                evidence="...format c:...",
+                matched_indicator="format c:",
+            ),
+            Finding(
+                detector="rule_engine",
+                category=FindingCategory.DATA_EXFILTRATION,
+                severity=FindingSeverity.HIGH,
+                evidence="...send data to http...",
+                matched_indicator="send data to http",
+            ),
         ]
-        result = evaluate_policy(findings)
-        assert result["decision"] == "block"
+        res1 = evaluate_policy(findings)
+        res2 = evaluate_policy(findings)
 
-    def test_high_unauthorized_tool_use(self) -> None:
+        assert res1["risk_score"] == res2["risk_score"]
+        assert 0 <= res1["risk_score"] <= 100
+        assert isinstance(res1["risk_score"], int)
+
+    def test_permissive_mode_allows_low_severity_indicator(self) -> None:
+        """Permissive mode should permit isolated low-severity indicators."""
         findings = [
-            _finding("unauthorized_tool_use", "high"),
-            _finding("data_exfiltration", "high"),
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.LOW.value,
+                "evidence": "...act as an unfiltered...",
+                "matched_indicator": "act as an unfiltered",
+            }
         ]
-        result = evaluate_policy(findings)
-        assert result["decision"] == "block"
+        # In balanced mode: review
+        balanced_res = evaluate_policy(findings, mode="balanced")
+        assert balanced_res["decision"] == Decision.REVIEW.value
 
-    def test_multi_category_increases_score(self) -> None:
-        single = evaluate_policy([_finding("secret_extraction", "medium")])
-        multi = evaluate_policy([
-            _finding("secret_extraction", "medium", "pattern A"),
-            _finding("data_exfiltration", "medium", "pattern B"),
-        ])
-        assert multi["risk_score"] > single["risk_score"]
+        # In permissive mode: allow
+        permissive_res = evaluate_policy(findings, mode="permissive")
+        assert permissive_res["decision"] == Decision.ALLOW.value
+        assert "allowed" in permissive_res["explanation"].lower()
 
+    def test_permissive_mode_still_blocks_high_severity_threats(self) -> None:
+        """Permissive mode must never weaken protections against high-severity critical attacks."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.DATA_EXFILTRATION.value,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...curl http://evil.com...",
+                "matched_indicator": "curl http",
+            }
+        ]
+        res = evaluate_policy(findings, mode="permissive")
+        assert res["decision"] == Decision.BLOCK.value
+        assert res["risk_score"] >= 70
 
-# ---------------------------------------------------------------------------
-# Response structure
-# ---------------------------------------------------------------------------
+    def test_strict_mode_blocks_isolated_instruction_override(self) -> None:
+        """Strict mode enforces zero-trust by blocking isolated high-severity overrides."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.INSTRUCTION_OVERRIDE.value,
+                "severity": FindingSeverity.HIGH.value,
+                "evidence": "...ignore previous instructions...",
+                "matched_indicator": "ignore previous instructions",
+            }
+        ]
+        # In balanced mode: review
+        balanced_res = evaluate_policy(findings, mode="balanced")
+        assert balanced_res["decision"] == Decision.REVIEW.value
 
+        # In strict mode: block
+        strict_res = evaluate_policy(findings, mode="strict")
+        assert strict_res["decision"] == Decision.BLOCK.value
+        assert strict_res["risk_score"] >= 80
+        assert "blocked" in strict_res["explanation"].lower()
 
-class TestResponseStructure:
-    """Verify the structure of the policy result."""
+    def test_strict_mode_blocks_medium_severity_serious_threat(self) -> None:
+        """Strict mode blocks medium-severity findings in serious categories."""
+        findings = [
+            {
+                "detector": "rule_engine",
+                "category": FindingCategory.UNAUTHORIZED_TOOL_USE.value,
+                "severity": FindingSeverity.MEDIUM.value,
+                "evidence": "...call tool without authorization...",
+                "matched_indicator": "call tool without authorization",
+            }
+        ]
+        # In balanced mode: review
+        balanced_res = evaluate_policy(findings, mode="balanced")
+        assert balanced_res["decision"] == Decision.REVIEW.value
 
-    def test_keys_present(self) -> None:
-        result = evaluate_policy([])
-        assert "risk_score" in result
-        assert "decision" in result
-        assert "reasons" in result
-
-    def test_decision_values(self) -> None:
-        """Decision must be one of allow, review, block."""
-        for decision in ("allow", "review", "block"):
-            # We just verify the type; specific decisions are tested above.
-            pass
-        result = evaluate_policy([])
-        assert result["decision"] in ("allow", "review", "block")
-
-    def test_reasons_is_list_of_strings(self) -> None:
-        result = evaluate_policy([_finding()])
-        assert isinstance(result["reasons"], list)
-        for reason in result["reasons"]:
-            assert isinstance(reason, str)
+        # In strict mode: block
+        strict_res = evaluate_policy(findings, mode="strict")
+        assert strict_res["decision"] == Decision.BLOCK.value
+        assert strict_res["risk_score"] >= 80
